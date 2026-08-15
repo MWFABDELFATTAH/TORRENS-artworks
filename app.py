@@ -5,7 +5,7 @@ import gradio as gr
 import re
 import base64
 
-# 1. Setup Groq (Cloud AI)
+# 1. Setup Groq
 client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
 # 2. Load Excel Data
@@ -17,12 +17,11 @@ except Exception as e:
     df = pd.DataFrame()
 
 def get_image_path_and_base64(image_id):
-    # Look in the main root directory (".") since images are not in a folder
+    # Looks in the main root directory (".") for the images
     img_dir = "."
         
     for filename in os.listdir(img_dir):
-        # Case-insensitive check for file starting with "9." or "9_"
-        # Added extension check to ensure we only grab image files
+        # Check if file starts with the number (e.g., "6.") and is an image
         ext = filename.split('.')[-1].lower()
         if filename.lower().startswith(f"{image_id}.") and ext in ["jpg", "jpeg", "png", "webp"]:
             img_path = os.path.join(img_dir, filename)
@@ -40,9 +39,9 @@ def get_image_path_and_base64(image_id):
                 
             return img_path, (base64_img, mime_type)
             
-    # If it loops through everything and doesn't find it, tell us what IS in the folder
-    available_files = [f for f in os.listdir(img_dir) if f.lower().endswith(('.jpg', '.png', '.jpeg', '.webp'))][:5]
-    return None, f"Error: Could not find a file starting with '{image_id}.' in the root folder. First 5 image files found: {available_files}"
+    # If it fails, it will tell us exactly what image files ARE in the folder
+    available_files = [f for f in os.listdir(img_dir) if f.lower().endswith(('.jpg', '.png', '.jpeg', '.webp'))][:10]
+    return None, f"Error: Could not find a file starting with '{image_id}.' in the root folder. First 10 image files found: {available_files}"
 
 # 3. The Chat Engine
 def answer_question(user_prompt, history):
@@ -72,7 +71,7 @@ def answer_question(user_prompt, history):
         
         img_path, image_data = get_image_path_and_base64(requested_id)
         
-        if isinstance(image_data, str): # This means an error message was returned instead of image data
+        if isinstance(image_data, str):
             return f"**Artwork ID {requested_id}:** {title} ({date}) by {artist}.\n\n*({image_data})*"
 
         base64_img, mime_type = image_data
