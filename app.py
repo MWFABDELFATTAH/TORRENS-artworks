@@ -1,15 +1,14 @@
 import os
 import pandas as pd
-from openai import OpenAI
 import gradio as gr
 import re
 import base64
+import google.generativeai as genai
 
-# 1. Setup Google Gemini using the reliable OpenAI SDK
-client = OpenAI(
-    api_key=os.environ.get("GEMINI_API_KEY"),
-    base_url="https://generativelanguage.googleapis.com/v1beta/openai/"
-)
+# 1. Setup Google Gemini
+genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
+# Using Gemini 3.5 Flash
+model = genai.GenerativeModel('gemini-3.5-flash')
 
 # 2. Load Excel Data
 try:
@@ -19,7 +18,7 @@ except Exception as e:
     print(f"Error loading Excel: {e}")
     df = pd.DataFrame()
 
-def get_image_path_and_base64(image_id):
+def get_image_data(image_id):
     img_dir = "."
         
     for filename in os.listdir(img_dir):
@@ -27,7 +26,7 @@ def get_image_path_and_base64(image_id):
         if filename.lower().startswith(f"{image_id}.") and ext in ["jpg", "jpeg", "png", "webp"]:
             img_path = os.path.join(img_dir, filename)
             with open(img_path, "rb") as image_file:
-                base64_img = base64.b64encode(image_file.read()).decode('utf-8')
+                img_bytes = image_file.read()
                 
             if ext in ["jpg", "jpeg"]:
                 mime_type = "image/jpeg"
@@ -38,10 +37,9 @@ def get_image_path_and_base64(image_id):
             else:
                 mime_type = "image/jpeg"
                 
-            return img_path, (base64_img, mime_type)
+            return img_path, img_bytes, mime_type
             
-    available_files = [f for f in os.listdir(img_dir) if f.lower().endswith(('.jpg', '.png', '.jpeg', '.webp'))][:10]
-    return None, f"Error: Could not find a file starting with '{image_id}.' in the root folder. First 10 image files found: {available_files}"
+    return None, None, "Error: Image file not found."
 
 # 3. The Chat Engine
 def answer_question(user_prompt, history):
@@ -69,12 +67,13 @@ def answer_question(user_prompt, history):
         artist = str(row.get('Artist (if known)', 'Unknown Artist'))
         style = str(row.get('Artistic style', 'Unknown Style'))
         
-        img_path, image_data = get_image_path_and_base64(requested_id)
+        img_path, img_bytes, mime_or_error = get_image_data(requested_id)
         
-        if isinstance(image_data, str):
-            return f"**Artwork ID {requested_id}:** {title} ({date}) by {artist}.\n\n*({image_data})*"
+        if not img_bytes:
+            return f"**Artwork ID {requested_id}:** {title} ({date}) by {artist}.\n\n*({mime_or_error})*"
 
-        base64_img, mime_type = image_data
+        mime_type = mime_or_error
+        base64_img = base64.b64encode(img_bytes).decode('utf-8')
         
         csv_context = f"""
         Title: {title}
@@ -96,25 +95,12 @@ def answer_question(user_prompt, history):
         """
         
         try:
-            # Using OpenAI SDK to call Gemini 1.5 Flash
-            res = client.chat.completions.create(
-                model="gemini-1.5-flash",
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": strict_prompt},
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:{mime_type};base64,{base64_img}"
-                                }
-                            }
-                        ]
-                    }
-                ]
-            )
-            response_text = res.choices[0].message.content
+            # Pass the raw image bytes directly to Gemini
+            response = model.generate_content([
+                strict_prompt,
+                {"mime_type": mime_type, "data": img_bytes}
+            ])
+            response_text = response.text
             
             final_response = f"**Artwork ID {requested_id}**\n\n{response_text}\n\n![Artwork](data:{mime_type};base64,{base64_img})"
             return final_response
