@@ -8,7 +8,27 @@ import base64
 # 1. Setup Groq
 client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
-# 2. Load Excel Data
+# 2. Automatically find the correct Vision Model from Groq
+# This ensures the code never breaks if Groq changes model names
+VISION_MODEL = None
+try:
+    available_models = client.models.list()
+    for model in available_models.data:
+        if "vision" in model.id.lower():
+            VISION_MODEL = model.id
+            break
+    
+    if not VISION_MODEL:
+        # Fallback just in case
+        VISION_MODEL = "llama-3.2-90b-vision-preview"
+    
+    print(f"SUCCESS: Auto-detected and using vision model -> {VISION_MODEL}")
+except Exception as e:
+    print(f"Error fetching models: {e}")
+    VISION_MODEL = "llama-3.2-90b-vision-preview"
+
+
+# 3. Load Excel Data
 try:
     df = pd.read_excel("data.xlsx")
     df.columns = df.columns.str.strip()
@@ -40,7 +60,7 @@ def get_image_path_and_base64(image_id):
     available_files = [f for f in os.listdir(img_dir) if f.lower().endswith(('.jpg', '.png', '.jpeg', '.webp'))][:10]
     return None, f"Error: Could not find a file starting with '{image_id}.' in the root folder. First 10 image files found: {available_files}"
 
-# 3. The Chat Engine
+# 4. The Chat Engine
 def answer_question(user_prompt, history):
     if df.empty:
         return "Error: Could not load data.xlsx."
@@ -94,8 +114,8 @@ def answer_question(user_prompt, history):
         
         try:
             res = client.chat.completions.create(
-                # Changed to Groq's new Llama 4 vision model
-                model="meta-llama/llama-4-scout-17b-16e-instruct", 
+                # Automatically uses the model found above
+                model=VISION_MODEL, 
                 messages=[
                     {
                         "role": "user",
@@ -120,7 +140,7 @@ def answer_question(user_prompt, history):
     else:
         return "Please enter a valid artwork number between **1 and 48** to see the artwork, its metadata, and a visual analysis."
 
-# 4. Gradio Interface
+# 5. Gradio Interface
 def torrens_chat(user_message, history):
     return answer_question(user_message, history)
 
