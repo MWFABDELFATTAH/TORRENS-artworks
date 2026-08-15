@@ -1,13 +1,15 @@
 import os
 import pandas as pd
+from openai import OpenAI
 import gradio as gr
 import re
 import base64
-import google.generativeai as genai
 
-# 1. Setup Google Gemini
-genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
-model = genai.GenerativeModel('gemini-1.5-flash')
+# 1. Setup Google Gemini using the reliable OpenAI SDK
+client = OpenAI(
+    api_key=os.environ.get("GEMINI_API_KEY"),
+    base_url="https://generativelanguage.googleapis.com/v1beta/openai/"
+)
 
 # 2. Load Excel Data
 try:
@@ -94,12 +96,25 @@ def answer_question(user_prompt, history):
         """
         
         try:
-            # Gemini API Call
-            response = model.generate_content([
-                strict_prompt,
-                {"mime_type": mime_type, "data": base64_img}
-            ])
-            response_text = response.text
+            # Using OpenAI SDK to call Gemini 1.5 Flash
+            res = client.chat.completions.create(
+                model="gemini-1.5-flash",
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": strict_prompt},
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:{mime_type};base64,{base64_img}"
+                                }
+                            }
+                        ]
+                    }
+                ]
+            )
+            response_text = res.choices[0].message.content
             
             final_response = f"**Artwork ID {requested_id}**\n\n{response_text}\n\n![Artwork](data:{mime_type};base64,{base64_img})"
             return final_response
