@@ -141,11 +141,11 @@ def answer_question(user_prompt, history):
 def torrens_chat(user_message, history):
     return answer_question(user_message, history)
 
+# Note: 'theme=gr.themes.Soft()' has been removed to fix the Render crash
 demo = gr.ChatInterface(
     fn=torrens_chat,
     title="Adelaide Artworks AI (1-48)",
-    description="Enter a number from 1 to 48 to view the artwork and receive a two-paragraph historical and visual analysis.",
-    theme=gr.themes.Soft()
+    description="Enter a number from 1 to 48 to view the artwork and receive a two-paragraph historical and visual analysis."
 )
 
 # Bind to port for Render deployment
