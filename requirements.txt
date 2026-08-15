@@ -1,4 +1,4 @@
 pandas
 gradio
-openai
+google-generativeai
 openpyxl
