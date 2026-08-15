@@ -8,27 +8,7 @@ import base64
 # 1. Setup Groq
 client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
-# 2. Automatically find the correct Vision Model from Groq
-# This ensures the code never breaks if Groq changes model names
-VISION_MODEL = None
-try:
-    available_models = client.models.list()
-    for model in available_models.data:
-        if "vision" in model.id.lower():
-            VISION_MODEL = model.id
-            break
-    
-    if not VISION_MODEL:
-        # Fallback just in case
-        VISION_MODEL = "llama-3.2-90b-vision-preview"
-    
-    print(f"SUCCESS: Auto-detected and using vision model -> {VISION_MODEL}")
-except Exception as e:
-    print(f"Error fetching models: {e}")
-    VISION_MODEL = "llama-3.2-90b-vision-preview"
-
-
-# 3. Load Excel Data
+# 2. Load Excel Data
 try:
     df = pd.read_excel("data.xlsx")
     df.columns = df.columns.str.strip()
@@ -60,7 +40,7 @@ def get_image_path_and_base64(image_id):
     available_files = [f for f in os.listdir(img_dir) if f.lower().endswith(('.jpg', '.png', '.jpeg', '.webp'))][:10]
     return None, f"Error: Could not find a file starting with '{image_id}.' in the root folder. First 10 image files found: {available_files}"
 
-# 4. The Chat Engine
+# 3. The Chat Engine
 def answer_question(user_prompt, history):
     if df.empty:
         return "Error: Could not load data.xlsx."
@@ -112,35 +92,50 @@ def answer_question(user_prompt, history):
         3. Paragraph 2: Conduct a visual analysis of the attached image. Describe what you actually see (composition, colors, subjects, landscape, buildings). Then, relate this visual evidence to the urban history of Adelaide as a city (e.g., colonial settlement, development of the River Torrens, infrastructure, or relations with Indigenous peoples).
         """
         
-        try:
-            res = client.chat.completions.create(
-                # Automatically uses the model found above
-                model=VISION_MODEL, 
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": strict_prompt},
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:{mime_type};base64,{base64_img}"
+        # Try multiple models in case one is decommissioned or restricted
+        models_to_try = [
+            "meta-llama/llama-4-scout-17b-16e-instruct",
+            "meta-llama/llama-4-maverick-17b-128e-instruct"
+        ]
+        
+        last_error = None
+        response_text = None
+        
+        for model_name in models_to_try:
+            try:
+                res = client.chat.completions.create(
+                    model=model_name,
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": strict_prompt},
+                                {
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": f"data:{mime_type};base64,{base64_img}"
+                                    }
                                 }
-                            }
-                        ]
-                    }
-                ]
-            )
-            response_text = res.choices[0].message.content
+                            ]
+                        }
+                    ]
+                )
+                response_text = res.choices[0].message.content
+                break # Success! Stop trying other models.
+            except Exception as e:
+                last_error = e
+                # If it fails, loop to try the next model
+                
+        if response_text:
             final_response = f"**Artwork ID {requested_id}**\n\n{response_text}\n\n![Artwork](data:{mime_type};base64,{base64_img})"
             return final_response
-        except Exception as e:
-            return f"Error generating response: {str(e)}"
+        else:
+            return f"**Artwork ID {requested_id}:** {title} ({date}) by {artist}.\n\nError generating AI visual analysis. Groq returned: {str(last_error)}. \n\n**How to fix:** Go to https://console.groq.com/playground, select a 'Llama 4' model from the dropdown, and if there is a prompt to 'Accept Terms', click it. Then try again!"
             
     else:
         return "Please enter a valid artwork number between **1 and 48** to see the artwork, its metadata, and a visual analysis."
 
-# 5. Gradio Interface
+# 4. Gradio Interface
 def torrens_chat(user_message, history):
     return answer_question(user_message, history)
 
