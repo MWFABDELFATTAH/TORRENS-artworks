@@ -17,11 +17,9 @@ except Exception as e:
     df = pd.DataFrame()
 
 def get_image_path_and_base64(image_id):
-    # Looks in the main root directory (".") for the images
     img_dir = "."
         
     for filename in os.listdir(img_dir):
-        # Check if file starts with the number (e.g., "6.") and is an image
         ext = filename.split('.')[-1].lower()
         if filename.lower().startswith(f"{image_id}.") and ext in ["jpg", "jpeg", "png", "webp"]:
             img_path = os.path.join(img_dir, filename)
@@ -39,7 +37,6 @@ def get_image_path_and_base64(image_id):
                 
             return img_path, (base64_img, mime_type)
             
-    # If it fails, it will tell us exactly what image files ARE in the folder
     available_files = [f for f in os.listdir(img_dir) if f.lower().endswith(('.jpg', '.png', '.jpeg', '.webp'))][:10]
     return None, f"Error: Could not find a file starting with '{image_id}.' in the root folder. First 10 image files found: {available_files}"
 
@@ -97,7 +94,8 @@ def answer_question(user_prompt, history):
         
         try:
             res = client.chat.completions.create(
-                model="llama-3.2-90b-vision-preview",
+                # Changed to a currently supported Groq Vision model
+                model="llama-3.2-11b-vision-preview", 
                 messages=[
                     {
                         "role": "user",
