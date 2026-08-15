@@ -1,12 +1,13 @@
 import os
 import pandas as pd
-from groq import Groq
 import gradio as gr
 import re
 import base64
+import google.generativeai as genai
 
-# 1. Setup Groq
-client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
+# 1. Setup Google Gemini
+genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
+model = genai.GenerativeModel('gemini-1.5-flash')
 
 # 2. Load Excel Data
 try:
@@ -92,45 +93,18 @@ def answer_question(user_prompt, history):
         3. Paragraph 2: Conduct a visual analysis of the attached image. Describe what you actually see (composition, colors, subjects, landscape, buildings). Then, relate this visual evidence to the urban history of Adelaide as a city (e.g., colonial settlement, development of the River Torrens, infrastructure, or relations with Indigenous peoples).
         """
         
-        # Try multiple models in case one is decommissioned or restricted
-        models_to_try = [
-            "meta-llama/llama-4-scout-17b-16e-instruct",
-            "meta-llama/llama-4-maverick-17b-128e-instruct"
-        ]
-        
-        last_error = None
-        response_text = None
-        
-        for model_name in models_to_try:
-            try:
-                res = client.chat.completions.create(
-                    model=model_name,
-                    messages=[
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "text", "text": strict_prompt},
-                                {
-                                    "type": "image_url",
-                                    "image_url": {
-                                        "url": f"data:{mime_type};base64,{base64_img}"
-                                    }
-                                }
-                            ]
-                        }
-                    ]
-                )
-                response_text = res.choices[0].message.content
-                break # Success! Stop trying other models.
-            except Exception as e:
-                last_error = e
-                # If it fails, loop to try the next model
-                
-        if response_text:
+        try:
+            # Gemini API Call
+            response = model.generate_content([
+                strict_prompt,
+                {"mime_type": mime_type, "data": base64_img}
+            ])
+            response_text = response.text
+            
             final_response = f"**Artwork ID {requested_id}**\n\n{response_text}\n\n![Artwork](data:{mime_type};base64,{base64_img})"
             return final_response
-        else:
-            return f"**Artwork ID {requested_id}:** {title} ({date}) by {artist}.\n\nError generating AI visual analysis. Groq returned: {str(last_error)}. \n\n**How to fix:** Go to https://console.groq.com/playground, select a 'Llama 4' model from the dropdown, and if there is a prompt to 'Accept Terms', click it. Then try again!"
+        except Exception as e:
+            return f"Error generating response: {str(e)}"
             
     else:
         return "Please enter a valid artwork number between **1 and 48** to see the artwork, its metadata, and a visual analysis."
