@@ -94,8 +94,8 @@ def answer_question(user_prompt, history):
         
         try:
             res = client.chat.completions.create(
-                # Changed to a currently supported Groq Vision model
-                model="llama-3.2-11b-vision-preview", 
+                # Changed to Groq's new Llama 4 vision model
+                model="meta-llama/llama-4-scout-17b-16e-instruct", 
                 messages=[
                     {
                         "role": "user",
