@@ -4,10 +4,13 @@ import gradio as gr
 import re
 import base64
 import google.generativeai as genai
+from PIL import Image
+import io
+from skimage import segmentation, color
+import numpy as np
 
 # 1. Setup Google Gemini
 genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
-# Using Gemini 3.5 Flash
 model = genai.GenerativeModel('gemini-3.5-flash')
 
 # 2. Load Excel Data
@@ -40,6 +43,28 @@ def get_image_data(image_id):
             return img_path, img_bytes, mime_type
             
     return None, None, "Error: Image file not found."
+
+def generate_segmentation_image(img_bytes):
+    """Generates a semantic segmentation map from image bytes using scikit-image"""
+    try:
+        img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+        img_array = np.array(img)
+        
+        # Apply SLIC segmentation (simple linear iterative clustering)
+        segments = segmentation.slic(img_array, n_segments=150, compactness=10, start_label=1)
+        segmented_img = color.label2rgb(segments, img_array, kind='avg', bg_label=0)
+        
+        # Convert back to bytes
+        seg_pil = Image.fromarray((segmented_img * 255).astype(np.uint8))
+        byte_arr = io.BytesIO()
+        seg_pil.save(byte_arr, format='JPEG')
+        seg_bytes = byte_arr.getvalue()
+        
+        seg_base64 = base64.b64encode(seg_bytes).decode('utf-8')
+        return seg_base64
+    except Exception as e:
+        print(f"Segmentation error: {e}")
+        return None
 
 # 3. The Chat Engine
 def answer_question(user_prompt, history):
@@ -84,14 +109,16 @@ def answer_question(user_prompt, history):
         """
         
         strict_prompt = f"""
-        You are an expert art historian. The user requested information about Artwork ID {requested_id}.
+        You are an expert art historian and computer vision analyst. The user requested information about Artwork ID {requested_id}.
         Here is the archival data for this artwork:
         {csv_context}
         
         RULES (DO NOT HALLUCINATE METADATA):
-        1. YOUR RESPONSE MUST BE EXACTLY TWO PARAGRAPHS.
+        1. YOUR RESPONSE MUST BE EXACTLY FOUR PARAGRAPHS.
         2. Paragraph 1: Introduce the artwork. State the exact Name, Artist, and Year. Provide a brief contextual background based on the archival data provided.
-        3. Paragraph 2: Conduct a visual analysis of the attached image. Describe what you actually see (composition, colors, subjects, landscape, buildings). Then, relate this visual evidence to the urban history of Adelaide as a city (e.g., colonial settlement, development of the River Torrens, infrastructure, or relations with Indigenous peoples).
+        3. Paragraph 2: Conduct a visual analysis of the attached image. Describe what you actually see (composition, colors, subjects, landscape, buildings).
+        4. Paragraph 3: Explain how this artwork relates to the urban history of Adelaide as a city (e.g., colonial settlement, development of the River Torrens, infrastructure, or relations with Indigenous peoples).
+        5. Paragraph 4: Conduct a textual analysis of the semantic segmentation of this artwork. Describe how the image can be broken down into semantic regions (e.g., sky, water, land, architecture, figures) and what these distinct segments represent in the context of the scene.
         """
         
         try:
@@ -102,7 +129,18 @@ def answer_question(user_prompt, history):
             ])
             response_text = response.text
             
-            final_response = f"**Artwork ID {requested_id}**\n\n{response_text}\n\n![Artwork](data:{mime_type};base64,{base64_img})"
+            # Generate the Semantic Segmentation Image
+            seg_base64 = generate_segmentation_image(img_bytes)
+            
+            # Format final output with 4 paragraphs and 2 images
+            final_response = f"**Artwork ID {requested_id}**\n\n{response_text}\n\n"
+            final_response += f"**Original Artwork:**\n![Artwork](data:{mime_type};base64,{base64_img})\n\n"
+            
+            if seg_base64:
+                final_response += f"**Semantic Segmentation Map:**\n![Segmentation](data:image/jpeg;base64,{seg_base64})"
+            else:
+                final_response += "*(Semantic segmentation image could not be generated)*"
+                
             return final_response
         except Exception as e:
             return f"Error generating response: {str(e)}"
@@ -117,7 +155,7 @@ def torrens_chat(user_message, history):
 demo = gr.ChatInterface(
     fn=torrens_chat,
     title="Adelaide Artworks AI (1-48)",
-    description="Enter a number from 1 to 48 to view the artwork and receive a two-paragraph historical and visual analysis."
+    description="Enter a number from 1 to 48 to view the artwork, receive a 4-paragraph analysis, and see semantic segmentation."
 )
 
 if __name__ == "__main__":
