@@ -45,16 +45,20 @@ def get_image_data(image_id):
     return None, None, "Error: Image file not found."
 
 def generate_segmentation_image(img_bytes):
-    """Generates a semantic segmentation map from image bytes using scikit-image"""
+    """Generates a semantic segmentation map, optimizing size for Render Free Tier"""
     try:
         img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+        
+        # OPTIMIZATION: Resize image to max 800px to prevent Render server from freezing
+        max_size = (800, 800)
+        img.thumbnail(max_size, Image.Resampling.LANCZOS)
+        
         img_array = np.array(img)
         
-        # Apply SLIC segmentation (simple linear iterative clustering)
-        segments = segmentation.slic(img_array, n_segments=150, compactness=10, start_label=1)
+        # Apply SLIC segmentation
+        segments = segmentation.slic(img_array, n_segments=100, compactness=10, start_label=1)
         segmented_img = color.label2rgb(segments, img_array, kind='avg', bg_label=0)
         
-        # Convert back to bytes
         seg_pil = Image.fromarray((segmented_img * 255).astype(np.uint8))
         byte_arr = io.BytesIO()
         seg_pil.save(byte_arr, format='JPEG')
