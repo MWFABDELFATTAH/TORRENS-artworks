@@ -2,3 +2,6 @@ pandas
 gradio
 google-generativeai
 openpyxl
+scikit-image
+numpy
+Pillow
