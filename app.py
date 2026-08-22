@@ -12,7 +12,6 @@ from gtts import gTTS
 
 # 1. Setup Google Gemini
 genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
-# Using 1.5-flash as it is highly stable and fast for multimodal + text
 model = genai.GenerativeModel('gemini-1.5-flash')
 
 # 2. Load Excel Data
@@ -39,7 +38,6 @@ def get_image_data(image_id):
     return None, None, "Error: Image file not found."
 
 def generate_segmentation_image(img_bytes):
-    """Returns a PIL Image object for Gradio to render directly"""
     try:
         img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
         img.thumbnail((800, 800), Image.Resampling.LANCZOS)
@@ -53,17 +51,14 @@ def generate_segmentation_image(img_bytes):
         return None
 
 def text_to_speech_html(text):
-    """Converts text to speech and returns an HTML audio tag."""
     try:
-        # Clean text for TTS so it doesn't read asterisks and hashtags out loud
         clean_text = re.sub(r'[*#`_]', '', text)
         tts = gTTS(clean_text, lang='en', slow=False)
         mp3_fp = io.BytesIO()
         tts.write_to_fp(mp3_fp)
         mp3_fp.seek(0)
         audio_b64 = base64.b64encode(mp3_fp.read()).decode()
-        audio_html = f"\n\n<audio controls autoplay style='width:100%; display:block; margin-top:15px;'><source src='data:audio/mp3;base64,{audio_b64}' type='audio/mp3'></audio>"
-        return audio_html
+        return f"\n\n<audio controls autoplay style='width:100%; display:block; margin-top:15px;'><source src='data:audio/mp3;base64,{audio_b64}' type='audio/mp3'></audio>"
     except Exception as e:
         print(f"TTS Error: {e}")
         return ""
@@ -73,51 +68,44 @@ def answer_question(message, history):
     if df.empty:
         return {"text": "Error: Could not load data.xlsx."}
 
-    # Extract text and uploaded files from Gradio multimodal input
     user_text = message.get("text", "").strip()
     user_files = message.get("files", [])
 
-    # Find Artwork ID in current message
     requested_id = None
     numbers = re.findall(r'\b(\d+)\b', user_text)
     for num in numbers:
-        if 1 <= int(num) <= 53: # Updated to 53
+        if 1 <= int(num) <= 53:
             requested_id = int(num)
             break
 
-    # If no ID in current message, check history for context (Conversational Follow-up)
     is_followup = False
     if not requested_id and history:
-        # Scan history string to find the last mentioned Artwork ID
         history_str = str(history)
         matches = re.findall(r'Artwork ID (\d+)', history_str)
         if matches:
             requested_id = int(matches[-1])
             is_followup = True
 
-    # SCENARIO A: User uploaded an image/file to challenge or discuss
+    # SCENARIO A: User uploaded an image/file
     if user_files:
         parts = []
         if user_text:
-            parts.append(f"User said: '{user_text}'. The user also uploaded the following image(s) for you to analyze or compare.")
+            parts.append(f"User said: '{user_text}'. The user uploaded the following image(s) for you to analyze or compare.")
         else:
             parts.append("The user uploaded the following image(s) for you to analyze.")
 
-        # If we are currently discussing an artwork, include it for comparison
         if requested_id:
             img_path, img_bytes, mime_type = get_image_data(requested_id)
             if img_bytes:
                 parts.append(f"Reference Artwork ID {requested_id}:")
                 parts.append({"mime_type": mime_type, "data": img_bytes})
 
-        # Attach user uploaded files
         for file_path in user_files:
             ext = file_path.split('.')[-1].lower()
             mime = "image/jpeg" if ext in ["jpg", "jpeg"] else "image/png"
             try:
                 with open(file_path, "rb") as f:
                     parts.append({"mime_type": mime, "data": f.read()})
-                    parts.append("User uploaded image.")
             except Exception as e:
                 return {"text": f"Error reading uploaded file: {str(e)}"}
 
@@ -129,7 +117,7 @@ def answer_question(message, history):
         except Exception as e:
             return {"text": f"Error analyzing uploaded image: {str(e)}"}
 
-    # SCENARIO B: No artwork ID found at all and no image uploaded
+    # SCENARIO B: No artwork ID found
     if not requested_id:
         return {"text": "Please enter a valid artwork number between **1 and 53**, or upload an image to discuss."}
 
@@ -150,14 +138,14 @@ def answer_question(message, history):
 
     csv_context = f"Title: {title}\nArtist: {artist}\nDate: {date}\nStyle: {style}\nSource: {row.get('Source', 'N/A')}"
 
-    # SCENARIO C: Follow-up conversational question (Challenging the bot)
+    # SCENARIO C: Follow-up conversational question
     if is_followup:
         prompt = f"""
         The user is asking a follow-up question or challenging your previous analysis about Artwork ID {requested_id} ({title}).
         Archival Data: {csv_context}
         User's new input: "{user_text}"
 
-        Instructions: Respond conversationally to the user's input. Address their specific agreement, disagreement, or question directly based on the image provided. Do not repeat the original 4 paragraphs. Keep it engaging and polite.
+        Instructions: Respond conversationally. Address their specific agreement, disagreement, or question directly based on the image provided. Do not repeat the original 4 paragraphs.
         """
         try:
             response = model.generate_content([
@@ -170,7 +158,7 @@ def answer_question(message, history):
         except Exception as e:
             return {"text": f"Error: {str(e)}"}
 
-    # SCENARIO D: Fresh request for an Artwork (Text + Audio + Original Image + Segmentation Image)
+    # SCENARIO D: Fresh request for an Artwork
     strict_prompt = f"""
     You are an expert art historian. The user requested information about Artwork ID {requested_id}.
     Archival data:
@@ -190,18 +178,14 @@ def answer_question(message, history):
         ])
         response_text = response.text
         
-        # Generate the PIL Images for Gradio to render
         original_img = Image.open(io.BytesIO(img_bytes))
         seg_img = generate_segmentation_image(img_bytes)
 
-        # Build the text response
         text_md = f"**Artwork ID {requested_id}**\n\n{response_text}\n\n---\n"
         text_md += "**Original Artwork & Semantic Segmentation Map:**\n"
 
-        # Generate Audio
         audio_html = text_to_speech_html(response_text)
 
-        # Combine text, audio, and images together in the expected Gradio dictionary format
         if seg_img:
             return {
                 "text": text_md + audio_html,
@@ -215,14 +199,12 @@ def answer_question(message, history):
     except Exception as e:
         return {"text": f"Error generating response: {str(e)}"}
 
-# 4. Gradio Interface
+# 4. Gradio Interface (FIXED to prevent startup crash)
 demo = gr.ChatInterface(
     fn=answer_question,
-    type="messages",
-    multimodal=True, # This brings back the image upload button!
+    multimodal=True, # This enables the upload button natively without crashing
     title="Adelaide Artworks AI (1-53)",
-    description="Enter a number (1-53) to view artwork & analysis. You can also upload your own images to discuss, or ask follow-up questions!",
-    textbox=gr.Textbox(placeholder="Enter a number 1-53, or ask a follow-up question..."),
+    description="Enter a number (1-53) to view artwork & analysis. You can also upload your own images to discuss, or ask follow-up questions!"
 )
 
 if __name__ == "__main__":
