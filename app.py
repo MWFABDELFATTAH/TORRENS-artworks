@@ -16,7 +16,6 @@ try:
     df = pd.read_excel("data.xlsx")
     df.columns = df.columns.str.strip()
 except Exception as e:
-    print(f"Error loading Excel: {e}")
     df = pd.DataFrame()
 
 def get_raw_bytes(filepath):
@@ -25,18 +24,6 @@ def get_raw_bytes(filepath):
         with open(filepath, "rb") as f:
             return f.read()
     return None
-
-def optimize_image_for_gemini(img_bytes):
-    """Compresses image to 256px so Gemini replies fast."""
-    try:
-        from PIL import Image
-        img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-        img.thumbnail((256, 256), Image.Resampling.LANCZOS)
-        byte_arr = io.BytesIO()
-        img.save(byte_arr, format='JPEG', quality=60)
-        return byte_arr.getvalue()
-    except:
-        return img_bytes
 
 def text_to_speech_html(text, filename="audio.mp3"):
     try:
@@ -116,7 +103,9 @@ def answer_question(message, history):
     seg_bytes = get_raw_bytes(f"preloaded_segments/seg_{requested_id}.jpg")
     colors_bytes = get_raw_bytes(f"preloaded_colors/colors_{requested_id}.jpg")
     
-    mime_type = "image/jpeg" if original_img_path.lower().endswith(("jpg", "jpeg")) else "image/png"
+    # Send the SMALL seg_bytes to Gemini to analyze. 
+    # This removes the need for PIL completely! Zero resizing on Render's CPU.
+    image_to_send_to_gemini = seg_bytes if seg_bytes else original_bytes
 
     prompt = f"""
     You are an expert art historian. Artwork ID {requested_id}: {title}, Artist: {row.get('Artist (if known)', 'Unknown')}, Date: {row.get('Date', 'Unknown')}.
@@ -129,8 +118,8 @@ def answer_question(message, history):
     6. Paragraph 4: Conduct a textual analysis of semantic segmentation (sky, water, land, etc.).
     """
     try:
-        # Send tiny image to Gemini for fast response
-        response = model.generate_content([prompt, {"mime_type": mime_type, "data": optimize_image_for_gemini(original_bytes)}])
+        # Only Gemini API call + Audio generation. ZERO Image processing.
+        response = model.generate_content([prompt, {"mime_type": "image/jpeg", "data": image_to_send_to_gemini}])
         res_text = response.text
         
         text_md = f"**Artwork ID {requested_id}**\n\n{res_text}\n\n---\n"
