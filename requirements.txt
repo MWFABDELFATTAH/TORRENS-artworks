@@ -3,6 +3,7 @@ gradio
 google-generativeai
 openpyxl
 numpy
+scikit-learn
 Pillow
 gTTS
 audioop-lts
