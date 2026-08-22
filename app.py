@@ -10,8 +10,8 @@ import numpy as np
 from gtts import gTTS
 from sklearn.cluster import KMeans
 
-# 1. Setup Groq API (Lightning fast, handles 10 users easily!)
-client = Groq(api_key="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")
+# 1. Setup Groq API
+client = Groq(api_key="gsk_YOUR_GROQ_API_KEY_HERE")
 
 # 2. Load Excel Data
 try:
@@ -27,6 +27,7 @@ def get_image_path(image_id):
     return None
 
 def get_color_percentages(img_path):
+    """Calculates exact percentages in 0.05 seconds on a 30x30 image"""
     try:
         img = Image.open(img_path).convert("RGB")
         img.thumbnail((30, 30)) 
@@ -42,6 +43,7 @@ def get_color_percentages(img_path):
         return "Color data unavailable."
 
 def compress_image_to_base64(img_path):
+    """Compresses image to 512px and converts to base64 for the AI"""
     try:
         img = Image.open(img_path).convert("RGB")
         img.thumbnail((512, 512), Image.Resampling.LANCZOS)
@@ -96,7 +98,7 @@ def answer_question(message, history):
                 
                 chat_completion = client.chat.completions.create(
                     messages=messages,
-                    model="meta-llama/llama-4-scout-17b-16e-instruct",
+                    model="qwen-3.6-27b",
                 )
                 res_text = chat_completion.choices[0].message.content
                 
@@ -115,7 +117,7 @@ def answer_question(message, history):
             """
             chat_completion = client.chat.completions.create(
                 messages=[{"role": "user", "content": prompt}],
-                model="meta-llama/llama-4-scout-17b-16e-instruct",
+                model="qwen-3.6-27b",
             )
             res_text = chat_completion.choices[0].message.content
             audio_path = "general_response.mp3"
@@ -164,7 +166,7 @@ def answer_question(message, history):
             
         chat_completion = client.chat.completions.create(
             messages=messages,
-            model="meta-llama/llama-4-scout-17b-16e-instruct",
+            model="qwen-3.6-27b",
         )
         res_text = chat_completion.choices[0].message.content
 
