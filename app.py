@@ -7,7 +7,6 @@ import google.generativeai as genai
 from PIL import Image
 import io
 from gtts import gTTS
-import concurrent.futures
 
 # 1. Setup Google Gemini
 genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
@@ -20,128 +19,108 @@ try:
 except Exception as e:
     df = pd.DataFrame()
 
-def get_raw_bytes(filepath):
-    if os.path.exists(filepath):
-        with open(filepath, "rb") as f: return f.read()
+def get_image_path(image_id):
+    for filename in os.listdir("."):
+        if filename.lower().startswith(f"{image_id}.") and filename.split('.')[-1].lower() in ["jpg", "jpeg", "png", "webp"]:
+            return filename
     return None
 
-def get_shrunk_image_html(img_bytes, filename, caption):
-    """Shrinks image to 800px to prevent Render RAM crash, then makes it downloadable"""
-    if img_bytes is None: return ""
+def make_html_image(filepath, caption):
+    """Shrinks image to 500px to prevent RAM crash, then makes it downloadable"""
+    if not filepath or not os.path.exists(filepath): return ""
     try:
-        img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-        img.thumbnail((800, 800), Image.Resampling.LANCZOS) # Prevents RAM Crash
-        buffered = io.BytesIO()
-        img.save(buffered, format="JPEG", quality=85)
-        img_str = base64.b64encode(buffered.getvalue()).decode('utf-8')
+        img = Image.open(filepath).convert("RGB")
+        img.thumbnail((500, 500), Image.Resampling.LANCZOS)
+        buffer = io.BytesIO()
+        img.save(buffer, format="JPEG", quality=80)
+        b64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
         return f"""
-        <div style="margin-top: 15px;">
-            <p style="font-weight: bold; margin-bottom: 5px;">{caption} (Click to download)</p>
-            <a href="data:image/jpeg;base64,{img_str}" download="{filename}">
-                <img src="data:image/jpeg;base64,{img_str}" alt="{caption}" style="width: 100%; border-radius: 8px; border: 1px solid #444; cursor: pointer;">
+        <div style="margin-top:15px;">
+            <p style="font-weight:bold;">{caption} (Click to download)</p>
+            <a href="data:image/jpeg;base64,{b64}" download="{os.path.basename(filepath)}">
+                <img src="data:image/jpeg;base64,{b64}" style="width:100%; border-radius:8px; border:1px solid #444;">
             </a>
         </div>
         """
     except:
         return ""
 
-def text_to_speech_html(text, filename="audio.mp3"):
+def make_audio_html(text, filename):
     try:
-        clean_text = re.sub(r'[*#`_]', '', text)
-        tts = gTTS(clean_text, lang='en', slow=False)
-        mp3_fp = io.BytesIO()
-        tts.write_to_fp(mp3_fp)
-        mp3_fp.seek(0)
-        audio_b64 = base64.b64encode(mp3_fp.read()).decode()
+        clean = re.sub(r'[*#`_]', '', text)
+        tts = gTTS(clean, lang='en', slow=False)
+        buffer = io.BytesIO()
+        tts.write_to_fp(buffer)
+        buffer.seek(0)
+        b64 = base64.b64encode(buffer.read()).decode()
         return f"""
-        <div style="margin-top: 15px;">
-            <a href="data:audio/mp3;base64,{audio_b64}" download="{filename}" style="padding: 10px 15px; background-color: #2563eb; color: white; text-decoration: none; border-radius: 5px; display: inline-block; margin-bottom: 10px; font-weight: bold;">⬇ Download Audio</a>
-            <audio controls autoplay style="width: 100%; display: block;"><source src="data:audio/mp3;base64,{audio_b64}" type="audio/mp3"></audio>
+        <div style="margin-top:15px;">
+            <a href="data:audio/mp3;base64,{b64}" download="{filename}" style="padding:10px; background:#2563eb; color:white; text-decoration:none; border-radius:5px; font-weight:bold;">⬇ Download Audio</a>
+            <audio controls autoplay style="width:100%; margin-top:10px;"><source src="data:audio/mp3;base64,{b64}" type="audio/mp3"></audio>
         </div>
         """
     except:
         return ""
 
-def process_query(message, history):
-    if df.empty: return {"text": "Error: Could not load data.xlsx."}
-
+def answer_question(message, history):
+    if df.empty: return {"text": "Error loading data."}
+    
     user_text = message.get("text", "").strip()
-    requested_ids = []
-    for num in re.findall(r'\b(\d+)\b', user_text):
-        if 1 <= int(num) <= 53: requested_ids.append(int(num))
-    requested_ids = list(dict.fromkeys(requested_ids))
-
-    if not requested_ids and history:
+    nums = re.findall(r'\b(\d+)\b', user_text)
+    art_id = None
+    for n in nums:
+        if 1 <= int(n) <= 53:
+            art_id = int(n)
+            break
+            
+    if not art_id and history:
         matches = re.findall(r'Artwork ID (\d+)', str(history))
-        if matches: requested_ids = [int(matches[-1])]
+        if matches: art_id = int(matches[-1])
 
-    if not requested_ids:
-        csv_data = df.to_string(index=False)
-        prompt = f"The user asked: '{user_text}'\nDatabase:\n{csv_data}\nInstructions: Answer based on database. Provide IDs and Titles."
-        res_text = model.generate_content(prompt).text
-        return {"text": res_text + text_to_speech_html(res_text, "answer.mp3")}
+    if not art_id:
+        if not user_text: return {"text": "Please enter a number 1-53."}
+        # General text query
+        res = model.generate_content(f"User asked: '{user_text}'\nDatabase:\n{df.to_string(index=False)}\nAnswer:")
+        return {"text": res.text + make_audio_html(res.text, "response.mp3")}
 
-    requested_id = requested_ids[0]
-    match_df = df[df['ID'].astype(str).str.strip() == str(requested_id)]
-    if match_df.empty: return {"text": "Artwork not found."}
-
-    row = match_df.iloc[0]
+    row = df[df['ID'].astype(str).str.strip() == str(art_id)].iloc[0]
     title = str(row.get('TITLE', 'Unknown'))
     
-    img_dir = "."
-    original_img_path = None
-    for filename in os.listdir(img_dir):
-        if filename.lower().startswith(f"{requested_id}.") and filename.split('.')[-1].lower() in ["jpg", "jpeg", "png", "webp"]:
-            original_img_path = os.path.join(img_dir, filename)
-            break
+    orig_path = get_image_path(art_id)
+    seg_path = f"preloaded_segments/seg_{art_id}.jpg"
+    col_path = f"preloaded_colors/colors_{art_id}.jpg"
 
-    if not original_img_path: return {"text": "Image not found."}
-
-    # INSTANTLY load pre-made images from folders (Zero CPU math)
-    original_bytes = get_raw_bytes(original_img_path)
-    seg_bytes = get_raw_bytes(f"preloaded_segments/seg_{requested_id}.jpg")
-    colors_bytes = get_raw_bytes(f"preloaded_colors/colors_{requested_id}.jpg")
-    
-    # Send the tiny seg_bytes to Gemini to prevent RAM crashes
-    image_to_send_to_gemini = seg_bytes if seg_bytes else original_bytes
+    # Shrink image for Gemini to prevent RAM crash
+    try:
+        img = Image.open(orig_path).convert("RGB")
+        img.thumbnail((256, 256), Image.Resampling.LANCZOS)
+        buffer = io.BytesIO()
+        img.save(buffer, format="JPEG", quality=60)
+        gemini_img_bytes = buffer.getvalue()
+    except:
+        gemini_img_bytes = None
 
     prompt = f"""
-    You are an expert art historian. Artwork ID {requested_id}: {title}, Artist: {row.get('Artist (if known)', 'Unknown')}, Date: {row.get('Date', 'Unknown')}.
-    RULES:
-    1. YOUR RESPONSE MUST BE EXACTLY FOUR PARAGRAPHS.
-    2. Paragraph 1: Introduce the artwork (Name, Artist, Year, context) and visual analysis.
-    3. Paragraph 2: Conduct a visual analysis of the attached image, including dominant colors and mood.
-    4. Paragraph 3: Relate to urban history of Adelaide.
-    5. Paragraph 4: Conduct a textual analysis of semantic segmentation (sky, water, land, etc.).
+    You are an expert art historian. Artwork ID {art_id}: {title}. 
+    Provide EXACTLY FOUR paragraphs (about 80 words each).
+    1. Introduce the artwork (Name, Artist, Year, context) and visual analysis.
+    2. Conduct a visual analysis of the attached image, including dominant colors and mood.
+    3. Relate to urban history of Adelaide.
+    4. Conduct a textual analysis of semantic segmentation (sky, water, land, etc.).
     """
     
-    # Make the API call
-    response = model.generate_content([prompt, {"mime_type": "image/jpeg", "data": image_to_send_to_gemini}])
-    res_text = response.text
-    
-    text_md = f"**Artwork ID {requested_id}**\n\n{res_text}\n\n---\n"
-    text_md += get_shrunk_image_html(original_bytes, f"art_{requested_id}_orig.jpg", "Original Artwork")
-    text_md += get_shrunk_image_html(seg_bytes, f"art_{requested_id}_seg.jpg", "Semantic Segmentation")
-    text_md += get_shrunk_image_html(colors_bytes, f"art_{requested_id}_colors.jpg", "Dominant Color Palette")
+    res = model.generate_content([prompt, {"mime_type": "image/jpeg", "data": gemini_img_bytes}])
+    res_text = res.text
 
-    return {"text": text_md + text_to_speech_html(res_text, f"art_{requested_id}.mp3")}
+    html = f"**Artwork ID {art_id}**\n\n{res_text}\n\n---\n"
+    html += make_html_image(orig_path, "Original Artwork")
+    html += make_html_image(seg_path, "Semantic Segmentation")
+    html += make_html_image(col_path, "Dominant Color Palette")
+    html += make_audio_html(res_text, f"art_{art_id}.mp3")
 
-# 3. Wrapper with 45-Second Strict Timeout
-def answer_question(message, history):
-    with concurrent.futures.ThreadPoolExecutor() as executor:
-        future = executor.submit(process_query, message, history)
-        try:
-            return future.result(timeout=45)
-        except concurrent.futures.TimeoutError:
-            return {"text": "⏳ The server took too long to respond (over 45 seconds). Please try sending your message again."}
+    return {"text": html}
 
-# 4. Gradio Interface
-demo = gr.ChatInterface(
-    fn=answer_question,
-    multimodal=True,
-    title="Adelaide Artworks AI (1-53)",
-    description="Ask about an artwork (1-53)!"
-)
+demo = gr.ChatInterface(fn=answer_question, multimodal=True, title="Adelaide Artworks AI (1-53)")
 
 if __name__ == "__main__":
     demo.launch(server_name="0.0.0.0", server_port=int(os.environ.get("PORT", 7860)))
