@@ -66,7 +66,6 @@ def extract_dominant_colors(img_bytes):
         
         colors = kmeans.cluster_centers_.astype(int)
         
-        # Sort by percentage descending
         sorted_idx = np.argsort(-percentages)
         colors = colors[sorted_idx]
         percentages = percentages[sorted_idx]
@@ -169,7 +168,6 @@ def answer_question(message, history):
                 original_img = Image.open(io.BytesIO(uploaded_img_bytes))
                 seg_img = generate_segmentation_image(uploaded_img_bytes)
                 
-                # Generate Colors for User Upload
                 colors, pcts = extract_dominant_colors(uploaded_img_bytes)
                 color_bar = create_color_bar(colors, pcts) if colors is not None else None
                 
@@ -295,12 +293,11 @@ def answer_question(message, history):
     {color_context}
 
     RULES:
-    1. YOUR RESPONSE MUST BE EXACTLY FIVE PARAGRAPHS.
+    1. YOUR RESPONSE MUST BE EXACTLY FOUR PARAGRAPHS.
     2. Paragraph 1: Introduce the artwork (Name, Artist, Year, context).
-    3. Paragraph 2: Visual analysis of the attached image.
+    3. Paragraph 2: Conduct a visual analysis of the attached image. You MUST incorporate the dominant color data provided above to discuss the mood, season, and palette.
     4. Paragraph 3: Relate to urban history of Adelaide.
     5. Paragraph 4: Textual analysis of semantic segmentation (sky, water, land, etc.).
-    6. Paragraph 5: Analyze the dominant color palette provided above. Explain the mood, season, or time of day the artist is conveying with these specific colors and percentages.
     """
     try:
         response = model.generate_content([
