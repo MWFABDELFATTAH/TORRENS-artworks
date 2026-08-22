@@ -1,6 +1,6 @@
 pandas
 gradio
-google-genai
+groq
 openpyxl
 numpy
 scikit-learn
