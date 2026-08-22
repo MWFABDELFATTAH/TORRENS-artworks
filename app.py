@@ -25,26 +25,6 @@ def get_image_path(image_id):
             return filename
     return None
 
-def make_html_image(filepath, caption):
-    """Resizes image to 500px to prevent Render RAM crash, then makes it downloadable"""
-    if not filepath or not os.path.exists(filepath): return ""
-    try:
-        img = Image.open(filepath).convert("RGB")
-        img.thumbnail((500, 500), Image.Resampling.LANCZOS)
-        buffer = io.BytesIO()
-        img.save(buffer, format="JPEG", quality=80)
-        b64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
-        return f"""
-        <div style="margin-top:15px;">
-            <p style="font-weight:bold;">{caption} (Click to download)</p>
-            <a href="data:image/jpeg;base64,{b64}" download="{os.path.basename(filepath)}">
-                <img src="data:image/jpeg;base64,{b64}" style="width:100%; border-radius:8px; border:1px solid #444;">
-            </a>
-        </div>
-        """
-    except:
-        return ""
-
 def make_audio_html(text, filename):
     try:
         clean = re.sub(r'[*#`_]', '', text)
@@ -63,7 +43,7 @@ def make_audio_html(text, filename):
         return ""
 
 def answer_question(message, history):
-    if df.empty: return "Error loading data."
+    if df.empty: return {"text": "Error loading data."}
     
     user_text = message.get("text", "").strip()
     nums = re.findall(r'\b(\d+)\b', user_text)
@@ -77,11 +57,13 @@ def answer_question(message, history):
         matches = re.findall(r'Artwork ID (\d+)', str(history))
         if matches: art_id = int(matches[-1])
 
+    # SCENARIO A: General Question (No number)
     if not art_id:
-        if not user_text: return "Please enter a number 1-53."
+        if not user_text: return {"text": "Please enter a number 1-53."}
         res = model.generate_content(f"User asked: '{user_text}'\nDatabase:\n{df.to_string(index=False)}\nAnswer:")
-        return res.text + make_audio_html(res.text, "response.mp3")
+        return {"text": res.text + make_audio_html(res.text, "response.mp3")}
 
+    # SCENARIO B: Specific Artwork Request
     row = df[df['ID'].astype(str).str.strip() == str(art_id)].iloc[0]
     title = str(row.get('TITLE', 'Unknown'))
     
@@ -89,15 +71,14 @@ def answer_question(message, history):
     seg_path = f"preloaded_segments/seg_{art_id}.jpg"
     col_path = f"preloaded_colors/colors_{art_id}.jpg"
 
-    # Shrink image for Gemini to prevent RAM crash and speed up API
-    try:
-        img = Image.open(orig_path).convert("RGB")
-        img.thumbnail((256, 256), Image.Resampling.LANCZOS)
-        buffer = io.BytesIO()
-        img.save(buffer, format="JPEG", quality=60)
-        gemini_img_bytes = buffer.getvalue()
-    except:
-        gemini_img_bytes = None
+    # Send the tiny pre-processed seg image to Gemini to prevent RAM crashes and speed up API
+    gemini_img_bytes = None
+    if os.path.exists(seg_path):
+        with open(seg_path, "rb") as f:
+            gemini_img_bytes = f.read()
+    elif orig_path and os.path.exists(orig_path):
+        with open(orig_path, "rb") as f:
+            gemini_img_bytes = f.read()
 
     prompt = f"""
     You are an expert art historian. Artwork ID {art_id}: {title}. 
@@ -111,15 +92,28 @@ def answer_question(message, history):
     res = model.generate_content([prompt, {"mime_type": "image/jpeg", "data": gemini_img_bytes}])
     res_text = res.text
 
-    html = f"**Artwork ID {art_id}**\n\n{res_text}\n\n---\n"
-    html += make_html_image(orig_path, "Original Artwork")
-    html += make_html_image(seg_path, "Semantic Segmentation")
-    html += make_html_image(col_path, "Dominant Color Palette")
-    html += make_audio_html(res_text, f"art_{art_id}.mp3")
+    # Build the text response
+    text_md = f"**Artwork ID {art_id}**\n\n{res_text}\n\n---\n"
+    
+    # Load native PIL Images for Gradio to render natively (No HTML base64 bloating!)
+    images_list = []
+    if orig_path and os.path.exists(orig_path):
+        images_list.append(Image.open(orig_path))
+    if os.path.exists(seg_path):
+        images_list.append(Image.open(seg_path))
+    if os.path.exists(col_path):
+        images_list.append(Image.open(col_path))
 
-    return html
+    # Generate Audio HTML
+    audio_html = make_audio_html(res_text, f"art_{art_id}.mp3")
 
-# NOTE: No `type="messages"` argument is used here, making it fully compatible with the latest Gradio.
+    # Return the dictionary exactly as Gradio expects it
+    return {
+        "text": text_md + audio_html,
+        "images": images_list
+    }
+
+# Gradio Interface
 demo = gr.ChatInterface(fn=answer_question, multimodal=True, title="Adelaide Artworks AI (1-53)")
 
 if __name__ == "__main__":
