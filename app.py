@@ -206,8 +206,7 @@ def answer_question(message, history):
 # 4. Gradio Interface
 demo = gr.ChatInterface(
     fn=answer_question,
-    type="messages",
-    multimodal=True, # ✅ Enables the file upload button!
+    multimodal=True, 
     title="Adelaide Artworks AI (1-53)",
     description="Enter a number (1-53) to view artwork & analysis. You can also upload your own images to discuss, or ask follow-up questions!",
     textbox=gr.Textbox(placeholder="Enter a number 1-53, or ask a follow-up question..."),
