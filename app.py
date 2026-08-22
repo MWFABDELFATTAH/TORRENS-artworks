@@ -8,10 +8,20 @@ import io
 import numpy as np
 from gtts import gTTS
 from sklearn.cluster import KMeans
+import random
 
-# 1. Setup Google Gemini
-genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
-model = genai.GenerativeModel('gemini-3.7-flash')
+# 1. Setup Google Gemini with Load Balancing (3 API Keys)
+# This rotates keys so 10 users can use the app simultaneously without hitting limits
+API_KEYS = [
+    "AQ.Ab8RN6KiB9HBDhhRmWPWizkb_Z9pBaFkt3BlK4JhmIKZofiMHA",
+    "AQ.Ab8RN6JaeGTdVaZsBn7Xf8AfE6KAmrSgoR-cZnGpX5za63T43Q",
+    "AQ.Ab8RN6KHWcBqABaBFh0QGE9by37e9a16S1vJhglTVAyy9Trt_A"
+]
+
+# Pick a random key for this session to distribute the load
+selected_key = random.choice(API_KEYS)
+genai.configure(api_key=selected_key)
+model = genai.GenerativeModel('gemini-2.0-flash') # 2.0-flash has the best free-tier limits
 
 # 2. Load Excel Data
 try:
@@ -74,7 +84,6 @@ def answer_question(message, history):
         
         csv_data = df.to_string(index=False)
         
-        # Check if we are currently discussing an artwork
         is_followup = False
         if history:
             matches = re.findall(r'Artwork ID (\d+)', str(history))
@@ -83,7 +92,6 @@ def answer_question(message, history):
                 is_followup = True
 
         if is_followup:
-            # User is either challenging the last artwork OR asking a general dataset question
             row = df[df['ID'].astype(str).str.strip() == str(art_id)].iloc[0]
             title = str(row.get('TITLE', 'Unknown'))
             orig_path = get_image_path(art_id)
@@ -115,7 +123,6 @@ def answer_question(message, history):
             except Exception as e:
                 return f"Error: {str(e)}"
         else:
-            # No history, just a general question
             prompt = f"""
             The user asked: "{user_text}"
             Here is the archival database metadata for all 53 artworks:
