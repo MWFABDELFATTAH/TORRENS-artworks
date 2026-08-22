@@ -26,7 +26,6 @@ def get_image_path(image_id):
     return None
 
 def make_html_image(filepath, caption):
-    """Shrinks image to 500px to prevent RAM crash, then makes it downloadable"""
     if not filepath or not os.path.exists(filepath): return ""
     try:
         img = Image.open(filepath).convert("RGB")
@@ -63,7 +62,7 @@ def make_audio_html(text, filename):
         return ""
 
 def answer_question(message, history):
-    if df.empty: return {"text": "Error loading data."}
+    if df.empty: return "Error loading data."
     
     user_text = message.get("text", "").strip()
     nums = re.findall(r'\b(\d+)\b', user_text)
@@ -78,10 +77,9 @@ def answer_question(message, history):
         if matches: art_id = int(matches[-1])
 
     if not art_id:
-        if not user_text: return {"text": "Please enter a number 1-53."}
-        # General text query
+        if not user_text: return "Please enter a number 1-53."
         res = model.generate_content(f"User asked: '{user_text}'\nDatabase:\n{df.to_string(index=False)}\nAnswer:")
-        return {"text": res.text + make_audio_html(res.text, "response.mp3")}
+        return res.text + make_audio_html(res.text, "response.mp3")
 
     row = df[df['ID'].astype(str).str.strip() == str(art_id)].iloc[0]
     title = str(row.get('TITLE', 'Unknown'))
@@ -90,7 +88,7 @@ def answer_question(message, history):
     seg_path = f"preloaded_segments/seg_{art_id}.jpg"
     col_path = f"preloaded_colors/colors_{art_id}.jpg"
 
-    # Shrink image for Gemini to prevent RAM crash
+    # Shrink image for Gemini
     try:
         img = Image.open(orig_path).convert("RGB")
         img.thumbnail((256, 256), Image.Resampling.LANCZOS)
@@ -118,9 +116,10 @@ def answer_question(message, history):
     html += make_html_image(col_path, "Dominant Color Palette")
     html += make_audio_html(res_text, f"art_{art_id}.mp3")
 
-    return {"text": html}
+    return html
 
-demo = gr.ChatInterface(fn=answer_question, multimodal=True, title="Adelaide Artworks AI (1-53)")
+# Added type="messages" back so Gradio knows how to read the multimodal input!
+demo = gr.ChatInterface(fn=answer_question, type="messages", multimodal=True, title="Adelaide Artworks AI (1-53)")
 
 if __name__ == "__main__":
     demo.launch(server_name="0.0.0.0", server_port=int(os.environ.get("PORT", 7860)))
