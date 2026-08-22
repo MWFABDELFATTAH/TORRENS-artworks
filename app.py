@@ -41,9 +41,11 @@ def get_image_data(image_id):
 def generate_segmentation_image(img_bytes):
     try:
         img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-        img.thumbnail((800, 800), Image.Resampling.LANCZOS)
+        # OPTIMIZATION: Shrink image drastically before SLIC to save CPU
+        img.thumbnail((400, 400), Image.Resampling.LANCZOS)
         img_array = np.array(img)
-        segments = segmentation.slic(img_array, n_segments=100, compactness=10, start_label=1)
+        # OPTIMIZATION: Reduced n_segments to 50 to speed up processing
+        segments = segmentation.slic(img_array, n_segments=50, compactness=10, start_label=1)
         segmented_img = color.label2rgb(segments, img_array, kind='avg', bg_label=0)
         seg_pil = Image.fromarray((segmented_img * 255).astype(np.uint8))
         return seg_pil
@@ -52,31 +54,29 @@ def generate_segmentation_image(img_bytes):
         return None
 
 def extract_dominant_colors(img_bytes):
-    """Extracts top 5 colors and their percentages using K-Means clustering"""
     try:
         img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-        img.thumbnail((150, 150)) # Shrink for fast processing
+        # OPTIMIZATION: Shrink to 100x100 for K-Means to save CPU
+        img.thumbnail((100, 100))
         img_array = np.array(img).reshape((-1, 3))
         
-        kmeans = KMeans(n_clusters=5, random_state=42, n_init=10)
+        # OPTIMIZATION: n_init=1 to speed up KMeans clustering
+        kmeans = KMeans(n_clusters=5, random_state=42, n_init=1)
         kmeans.fit(img_array)
         
         counts = np.unique(kmeans.labels_, return_counts=True)[1]
         percentages = (counts / counts.sum()) * 100
-        
         colors = kmeans.cluster_centers_.astype(int)
         
         sorted_idx = np.argsort(-percentages)
         colors = colors[sorted_idx]
         percentages = percentages[sorted_idx]
-        
         return colors, percentages
     except Exception as e:
         print(f"Color extraction error: {e}")
         return None, None
 
 def create_color_bar(colors, percentages):
-    """Creates a visual color bar image where each color is sized by its percentage"""
     try:
         bar_width = 800
         bar_height = 100
@@ -89,7 +89,6 @@ def create_color_bar(colors, percentages):
             r, g, b = colors[i]
             draw.rectangle([x_offset, 0, x_offset + w, bar_height], fill=(int(r), int(g), int(b)))
             x_offset += w
-            
         return color_bar
     except Exception as e:
         print(f"Color bar error: {e}")
@@ -121,7 +120,6 @@ def answer_question(message, history):
     for num in numbers:
         if 1 <= int(num) <= 53:
             requested_ids.append(int(num))
-    
     requested_ids = list(dict.fromkeys(requested_ids))
 
     is_followup = False
@@ -167,18 +165,14 @@ def answer_question(message, history):
             if uploaded_img_bytes:
                 original_img = Image.open(io.BytesIO(uploaded_img_bytes))
                 seg_img = generate_segmentation_image(uploaded_img_bytes)
-                
                 colors, pcts = extract_dominant_colors(uploaded_img_bytes)
                 color_bar = create_color_bar(colors, pcts) if colors is not None else None
                 
                 text_md = f"**Analysis of Uploaded Image:**\n\n{res_text}\n\n---\n**Your Image, Segmentation & Color Palette:**\n"
-                
                 images_list = [original_img]
                 if seg_img: images_list.append(seg_img)
                 if color_bar: images_list.append(color_bar)
-                
                 return {"text": text_md + audio_html, "images": images_list}
-            
             return {"text": res_text + audio_html}
         except Exception as e:
             return {"text": f"Error analyzing uploaded image: {str(e)}"}
@@ -187,7 +181,6 @@ def answer_question(message, history):
     if len(requested_ids) > 1:
         parts = [f"The user asked: '{user_text}'. Here are the requested artworks for you to compare/analyze:"]
         images_to_return = []
-        
         for art_id in requested_ids:
             match_df = df[df['ID'].astype(str).str.strip() == str(art_id)]
             if not match_df.empty:
@@ -198,7 +191,6 @@ def answer_question(message, history):
                     parts.append(f"Artwork ID {art_id} ({title}):")
                     parts.append({"mime_type": mime_type, "data": img_bytes})
                     images_to_return.append(Image.open(io.BytesIO(img_bytes)))
-        
         try:
             response = model.generate_content(parts)
             res_text = response.text
@@ -217,13 +209,14 @@ def answer_question(message, history):
                 f"Here is the archival database metadata for context:\n{csv_data}",
                 "IMPORTANT: I am also attaching ALL 53 artwork images below. You must visually analyze the images to find the answer. Do not rely on text alone."
             ]
+            # Smaller resize (150px) for batch sending to save Render CPU
             for art_id in range(1, 54):
                 img_path, img_bytes, mime_type = get_image_data(art_id)
                 if img_bytes:
                     img = Image.open(io.BytesIO(img_bytes))
-                    img.thumbnail((300, 300), Image.Resampling.LANCZOS)
+                    img.thumbnail((150, 150), Image.Resampling.LANCZOS)
                     byte_arr = io.BytesIO()
-                    img.convert("RGB").save(byte_arr, format='JPEG', quality=60)
+                    img.convert("RGB").save(byte_arr, format='JPEG', quality=50)
                     parts.append({"mime_type": "image/jpeg", "data": byte_arr.getvalue()})
 
             response = model.generate_content(parts)
@@ -256,14 +249,10 @@ def answer_question(message, history):
         The user is asking a follow-up question or challenging your previous analysis about Artwork ID {requested_id} ({title}).
         Archival Data: {csv_context}
         User's new input: "{user_text}"
-
         Instructions: Respond conversationally. Address their specific agreement, disagreement, or question directly based on the image provided. Do not repeat the original 4 paragraphs.
         """
         try:
-            response = model.generate_content([
-                prompt,
-                {"mime_type": mime_or_error, "data": img_bytes}
-            ])
+            response = model.generate_content([prompt, {"mime_type": mime_or_error, "data": img_bytes}])
             res_text = response.text
             audio_html = text_to_speech_html(res_text)
             return {"text": res_text + audio_html}
@@ -271,7 +260,6 @@ def answer_question(message, history):
             return {"text": f"Error: {str(e)}"}
 
     # SCENARIO E: Fresh request for a Single Artwork
-    # Extract colors automatically
     colors, pcts = extract_dominant_colors(img_bytes)
     color_bar = None
     color_context = "Dominant Colors:\n"
@@ -300,10 +288,7 @@ def answer_question(message, history):
     5. Paragraph 4: Textual analysis of semantic segmentation (sky, water, land, etc.).
     """
     try:
-        response = model.generate_content([
-            strict_prompt,
-            {"mime_type": mime_or_error, "data": img_bytes}
-        ])
+        response = model.generate_content([strict_prompt, {"mime_type": mime_or_error, "data": img_bytes}])
         response_text = response.text
         
         original_img = Image.open(io.BytesIO(img_bytes))
@@ -311,17 +296,13 @@ def answer_question(message, history):
 
         text_md = f"**Artwork ID {requested_id}**\n\n{response_text}\n\n---\n"
         text_md += "**Original Artwork, Semantic Segmentation, & Dominant Color Palette:**\n"
-
         audio_html = text_to_speech_html(response_text)
 
         images_list = [original_img]
         if seg_img: images_list.append(seg_img)
         if color_bar: images_list.append(color_bar)
 
-        return {
-            "text": text_md + audio_html,
-            "images": images_list
-        }
+        return {"text": text_md + audio_html, "images": images_list}
     except Exception as e:
         return {"text": f"Error generating response: {str(e)}"}
 
