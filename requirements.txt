@@ -1,6 +1,6 @@
 pandas
 gradio
-google-generativeai
+google-genai
 openpyxl
 numpy
 scikit-learn
