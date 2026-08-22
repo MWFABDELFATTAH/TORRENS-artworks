@@ -39,7 +39,7 @@ def get_image_data(image_id):
     return None, None, "Error: Image file not found."
 
 def optimize_image_for_gemini(img_bytes):
-    """THE SECRET SAUCE: Compresses image to 512px so Gemini replies in 5 seconds instead of 60 seconds."""
+    """Compresses image to 512px so Gemini replies in 5 seconds instead of 60 seconds."""
     try:
         img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
         img.thumbnail((512, 512), Image.Resampling.LANCZOS)
@@ -53,7 +53,7 @@ def optimize_image_for_gemini(img_bytes):
 def generate_segmentation_image(img_bytes):
     try:
         img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-        img.thumbnail((300, 300), Image.Resampling.LANCZOS) # Fast processing
+        img.thumbnail((300, 300), Image.Resampling.LANCZOS)
         img_array = np.array(img)
         segments = segmentation.slic(img_array, n_segments=30, compactness=10, start_label=1, enforce_connectivity=False)
         segmented_img = color.label2rgb(segments, img_array, kind='avg', bg_label=0)
@@ -66,7 +66,7 @@ def generate_segmentation_image(img_bytes):
 def extract_dominant_colors(img_bytes):
     try:
         img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-        img.thumbnail((50, 50)) # Instant K-Means clustering
+        img.thumbnail((50, 50))
         img_array = np.array(img).reshape((-1, 3))
         
         kmeans = KMeans(n_clusters=5, random_state=42, n_init=1, max_iter=20)
@@ -115,6 +115,19 @@ def text_to_speech_html(text):
         print(f"TTS Error: {e}")
         return ""
 
+def pil_to_base64_html(img, caption):
+    """Converts a PIL Image to a Base64 HTML markdown string so Gradio always shows it."""
+    if img is None:
+        return ""
+    try:
+        buffered = io.BytesIO()
+        img.convert("RGB").save(buffered, format="JPEG", quality=85)
+        img_str = base64.b64encode(buffered.getvalue()).decode('utf-8')
+        return f"\n### {caption}\n![{caption}](data:image/jpeg;base64,{img_str})\n"
+    except Exception as e:
+        print(f"Image to Base64 error: {e}")
+        return ""
+
 # 3. The Chat Engine
 def answer_question(message, history):
     if df.empty:
@@ -151,7 +164,6 @@ def answer_question(message, history):
                 img_path, img_bytes, mime_type = get_image_data(art_id)
                 if img_bytes:
                     parts.append(f"Reference Artwork ID {art_id}:")
-                    # Send compressed image to Gemini for speed
                     parts.append({"mime_type": "image/jpeg", "data": optimize_image_for_gemini(img_bytes)})
 
         uploaded_img_bytes = None
@@ -177,11 +189,12 @@ def answer_question(message, history):
                 colors, pcts = extract_dominant_colors(uploaded_img_bytes)
                 color_bar = create_color_bar(colors, pcts) if colors is not None else None
                 
-                text_md = f"**Analysis of Uploaded Image:**\n\n{res_text}\n\n---\n**Your Image, Segmentation & Color Palette:**\n"
-                images_list = [original_img]
-                if seg_img: images_list.append(seg_img)
-                if color_bar: images_list.append(color_bar)
-                return {"text": text_md + audio_html, "images": images_list}
+                text_md = f"**Analysis of Uploaded Image:**\n\n{res_text}\n\n---\n"
+                text_md += pil_to_base64_html(original_img, "Your Uploaded Image")
+                text_md += pil_to_base64_html(seg_img, "Semantic Segmentation")
+                text_md += pil_to_base64_html(color_bar, "Dominant Color Palette")
+                
+                return {"text": text_md + audio_html}
             return {"text": res_text + audio_html}
         except Exception as e:
             return {"text": f"Error analyzing uploaded image: {str(e)}"}
@@ -198,16 +211,19 @@ def answer_question(message, history):
                 img_path, img_bytes, mime_type = get_image_data(art_id)
                 if img_bytes:
                     parts.append(f"Artwork ID {art_id} ({title}):")
-                    # Send compressed image to Gemini for speed
                     parts.append({"mime_type": "image/jpeg", "data": optimize_image_for_gemini(img_bytes)})
-                    images_to_return.append(Image.open(io.BytesIO(img_bytes)))
+                    images_to_return.append((art_id, Image.open(io.BytesIO(img_bytes))))
         
         try:
             response = model.generate_content(parts)
             res_text = response.text
             audio_html = text_to_speech_html(res_text)
-            text_md = f"**Comparison of Artworks {', '.join(map(str, requested_ids))}:**\n\n{res_text}\n\n---\n**Requested Artworks:**\n"
-            return {"text": text_md + audio_html, "images": images_to_return}
+            text_md = f"**Comparison of Artworks {', '.join(map(str, requested_ids))}:**\n\n{res_text}\n\n---\n"
+            
+            for art_id, img in images_to_return:
+                text_md += pil_to_base64_html(img, f"Artwork ID {art_id}")
+                
+            return {"text": text_md + audio_html}
         except Exception as e:
             return {"text": f"Error comparing artworks: {str(e)}"}
 
@@ -255,7 +271,6 @@ def answer_question(message, history):
         Instructions: Respond conversationally. Address their specific agreement, disagreement, or question directly based on the image provided. Do not repeat the original 4 paragraphs.
         """
         try:
-            # Send compressed image to Gemini for speed
             response = model.generate_content([prompt, {"mime_type": "image/jpeg", "data": optimize_image_for_gemini(img_bytes)}])
             res_text = response.text
             audio_html = text_to_speech_html(res_text)
@@ -292,7 +307,6 @@ def answer_question(message, history):
     5. Paragraph 4: Textual analysis of semantic segmentation (sky, water, land, etc.).
     """
     try:
-        # Send compressed image to Gemini for speed
         response = model.generate_content([strict_prompt, {"mime_type": "image/jpeg", "data": optimize_image_for_gemini(img_bytes)}])
         response_text = response.text
         
@@ -300,14 +314,15 @@ def answer_question(message, history):
         seg_img = generate_segmentation_image(img_bytes)
 
         text_md = f"**Artwork ID {requested_id}**\n\n{response_text}\n\n---\n"
-        text_md += "**Original Artwork, Semantic Segmentation, & Dominant Color Palette:**\n"
+        
+        # EMBED ALL 3 IMAGES AS BASE64 HTML
+        text_md += pil_to_base64_html(original_img, "Original Artwork")
+        text_md += pil_to_base64_html(seg_img, "Semantic Segmentation Map")
+        text_md += pil_to_base64_html(color_bar, "Dominant Color Palette")
+
         audio_html = text_to_speech_html(response_text)
 
-        images_list = [original_img]
-        if seg_img: images_list.append(seg_img)
-        if color_bar: images_list.append(color_bar)
-
-        return {"text": text_md + audio_html, "images": images_list}
+        return {"text": text_md + audio_html}
     except Exception as e:
         return {"text": f"Error generating response: {str(e)}"}
 
