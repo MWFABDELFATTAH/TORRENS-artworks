@@ -2,16 +2,16 @@ import os
 import pandas as pd
 import gradio as gr
 import re
-from google import genai
-from google.genai import types
+from groq import Groq
 from PIL import Image
 import io
+import base64
 import numpy as np
 from gtts import gTTS
 from sklearn.cluster import KMeans
 
-# 1. Setup Google Gemini with the MODERN SDK and your AQ. key
-client = genai.Client(api_key="AQ.Ab8RN6KiB9HBDhhRmWPWizkb_Z9pBaFkt3BlK4JhmIKZofiMHA")
+# 1. Setup Groq API (Lightning fast, handles 10 users easily!)
+client = Groq(api_key="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")
 
 # 2. Load Excel Data
 try:
@@ -41,15 +41,15 @@ def get_color_percentages(img_path):
     except:
         return "Color data unavailable."
 
-def compress_image_for_gemini(img_path):
+def compress_image_to_base64(img_path):
     try:
         img = Image.open(img_path).convert("RGB")
         img.thumbnail((512, 512), Image.Resampling.LANCZOS)
         buffer = io.BytesIO()
         img.save(buffer, format="JPEG", quality=65)
-        return buffer.getvalue()
+        return base64.b64encode(buffer.getvalue()).decode('utf-8')
     except:
-        with open(img_path, "rb") as f: return f.read()
+        return None
 
 def answer_question(message, history):
     if df.empty: return "Error loading data."
@@ -77,7 +77,7 @@ def answer_question(message, history):
             row = df[df['ID'].astype(str).str.strip() == str(art_id)].iloc[0]
             title = str(row.get('TITLE', 'Unknown'))
             orig_path = get_image_path(art_id)
-            img_bytes = compress_image_for_gemini(orig_path) if orig_path else None
+            img_b64 = compress_image_to_base64(orig_path) if orig_path else None
 
             prompt = f"""
             The user asked: "{user_text}"
@@ -90,12 +90,16 @@ def answer_question(message, history):
             - YOU MUST NOT HALLUCINATE. Use only the provided data.
             """
             try:
-                contents = [prompt]
-                if img_bytes:
-                    contents.append(types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"))
-                # USING GEMINI 3.7 FLASH
-                res = client.models.generate_content(model="gemini-3.7-flash", contents=contents)
-                res_text = res.text
+                messages = [{"role": "user", "content": [{"type": "text", "text": prompt}]}]
+                if img_b64:
+                    messages[0]["content"].append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}})
+                
+                chat_completion = client.chat.completions.create(
+                    messages=messages,
+                    model="meta-llama/llama-4-scout-17b-16e-instruct",
+                )
+                res_text = chat_completion.choices[0].message.content
+                
                 audio_path = "followup_response.mp3"
                 clean_text = re.sub(r'[*#`_]', '', res_text)
                 gTTS(clean_text, lang='en', slow=False).save(audio_path)
@@ -109,9 +113,11 @@ def answer_question(message, history):
             {csv_data}
             Instructions: Answer the user's question using ONLY the database metadata provided above. List Artwork IDs and Titles. DO NOT HALLUCINATE.
             """
-            # USING GEMINI 3.7 FLASH
-            res = client.models.generate_content(model="gemini-3.7-flash", contents=prompt)
-            res_text = res.text
+            chat_completion = client.chat.completions.create(
+                messages=[{"role": "user", "content": prompt}],
+                model="meta-llama/llama-4-scout-17b-16e-instruct",
+            )
+            res_text = chat_completion.choices[0].message.content
             audio_path = "general_response.mp3"
             clean_text = re.sub(r'[*#`_]', '', res_text)
             gTTS(clean_text, lang='en', slow=False).save(audio_path)
@@ -132,7 +138,7 @@ def answer_question(message, history):
     audio_path = f"art_{art_id}_audio.mp3"
 
     color_data = get_color_percentages(orig_path)
-    gemini_img_bytes = compress_image_for_gemini(orig_path) if orig_path else None
+    img_b64 = compress_image_to_base64(orig_path) if orig_path else None
 
     prompt = f"""
     You are a strict, analytical art historian. You are analyzing Artwork ID {art_id}.
@@ -152,12 +158,15 @@ def answer_question(message, history):
     """
     
     try:
-        contents = [prompt]
-        if gemini_img_bytes:
-            contents.append(types.Part.from_bytes(data=gemini_img_bytes, mime_type="image/jpeg"))
-        # USING GEMINI 3.7 FLASH
-        res = client.models.generate_content(model="gemini-3.7-flash", contents=contents)
-        res_text = res.text
+        messages = [{"role": "user", "content": [{"type": "text", "text": prompt}]}]
+        if img_b64:
+            messages[0]["content"].append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}})
+            
+        chat_completion = client.chat.completions.create(
+            messages=messages,
+            model="meta-llama/llama-4-scout-17b-16e-instruct",
+        )
+        res_text = chat_completion.choices[0].message.content
 
         clean_text = re.sub(r'[*#`_]', '', res_text)
         gTTS(clean_text, lang='en', slow=False).save(audio_path)
