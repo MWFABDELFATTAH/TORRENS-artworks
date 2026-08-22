@@ -5,6 +5,5 @@ openpyxl
 scikit-image
 scikit-learn
 numpy
-Pillow
 gTTS
 audioop-lts
