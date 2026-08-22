@@ -38,14 +38,24 @@ def get_image_data(image_id):
             return img_path, img_bytes, mime_type
     return None, None, "Error: Image file not found."
 
+def optimize_image_for_gemini(img_bytes):
+    """THE SECRET SAUCE: Compresses image to 512px so Gemini replies in 5 seconds instead of 60 seconds."""
+    try:
+        img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+        img.thumbnail((512, 512), Image.Resampling.LANCZOS)
+        byte_arr = io.BytesIO()
+        img.save(byte_arr, format='JPEG', quality=70)
+        return byte_arr.getvalue()
+    except Exception as e:
+        print(f"Optimize error: {e}")
+        return img_bytes
+
 def generate_segmentation_image(img_bytes):
     try:
         img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-        # OPTIMIZATION: Shrink image drastically before SLIC to save CPU
-        img.thumbnail((400, 400), Image.Resampling.LANCZOS)
+        img.thumbnail((300, 300), Image.Resampling.LANCZOS) # Fast processing
         img_array = np.array(img)
-        # OPTIMIZATION: Reduced n_segments to 50 to speed up processing
-        segments = segmentation.slic(img_array, n_segments=50, compactness=10, start_label=1)
+        segments = segmentation.slic(img_array, n_segments=30, compactness=10, start_label=1, enforce_connectivity=False)
         segmented_img = color.label2rgb(segments, img_array, kind='avg', bg_label=0)
         seg_pil = Image.fromarray((segmented_img * 255).astype(np.uint8))
         return seg_pil
@@ -56,12 +66,10 @@ def generate_segmentation_image(img_bytes):
 def extract_dominant_colors(img_bytes):
     try:
         img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-        # OPTIMIZATION: Shrink to 100x100 for K-Means to save CPU
-        img.thumbnail((100, 100))
+        img.thumbnail((50, 50)) # Instant K-Means clustering
         img_array = np.array(img).reshape((-1, 3))
         
-        # OPTIMIZATION: n_init=1 to speed up KMeans clustering
-        kmeans = KMeans(n_clusters=5, random_state=42, n_init=1)
+        kmeans = KMeans(n_clusters=5, random_state=42, n_init=1, max_iter=20)
         kmeans.fit(img_array)
         
         counts = np.unique(kmeans.labels_, return_counts=True)[1]
@@ -107,7 +115,7 @@ def text_to_speech_html(text):
         print(f"TTS Error: {e}")
         return ""
 
-# 3. The Multimodal Chat Engine
+# 3. The Chat Engine
 def answer_question(message, history):
     if df.empty:
         return {"text": "Error: Could not load data.xlsx."}
@@ -143,7 +151,8 @@ def answer_question(message, history):
                 img_path, img_bytes, mime_type = get_image_data(art_id)
                 if img_bytes:
                     parts.append(f"Reference Artwork ID {art_id}:")
-                    parts.append({"mime_type": mime_type, "data": img_bytes})
+                    # Send compressed image to Gemini for speed
+                    parts.append({"mime_type": "image/jpeg", "data": optimize_image_for_gemini(img_bytes)})
 
         uploaded_img_bytes = None
         for file_path in user_files:
@@ -153,7 +162,7 @@ def answer_question(message, history):
                 with open(file_path, "rb") as f:
                     img_data = f.read()
                     uploaded_img_bytes = img_data
-                    parts.append({"mime_type": mime, "data": img_data})
+                    parts.append({"mime_type": mime, "data": optimize_image_for_gemini(img_data)})
             except Exception as e:
                 return {"text": f"Error reading uploaded file: {str(e)}"}
 
@@ -189,8 +198,10 @@ def answer_question(message, history):
                 img_path, img_bytes, mime_type = get_image_data(art_id)
                 if img_bytes:
                     parts.append(f"Artwork ID {art_id} ({title}):")
-                    parts.append({"mime_type": mime_type, "data": img_bytes})
+                    # Send compressed image to Gemini for speed
+                    parts.append({"mime_type": "image/jpeg", "data": optimize_image_for_gemini(img_bytes)})
                     images_to_return.append(Image.open(io.BytesIO(img_bytes)))
+        
         try:
             response = model.generate_content(parts)
             res_text = response.text
@@ -200,31 +211,23 @@ def answer_question(message, history):
         except Exception as e:
             return {"text": f"Error comparing artworks: {str(e)}"}
 
-    # SCENARIO C: General Question (No IDs)
+    # SCENARIO C: General Question (Text-only for instant response)
     if not requested_ids:
-        try:
-            csv_data = df.to_string(index=False)
-            parts = [
-                f"The user asked: '{user_text}'",
-                f"Here is the archival database metadata for context:\n{csv_data}",
-                "IMPORTANT: I am also attaching ALL 53 artwork images below. You must visually analyze the images to find the answer. Do not rely on text alone."
-            ]
-            # Smaller resize (150px) for batch sending to save Render CPU
-            for art_id in range(1, 54):
-                img_path, img_bytes, mime_type = get_image_data(art_id)
-                if img_bytes:
-                    img = Image.open(io.BytesIO(img_bytes))
-                    img.thumbnail((150, 150), Image.Resampling.LANCZOS)
-                    byte_arr = io.BytesIO()
-                    img.convert("RGB").save(byte_arr, format='JPEG', quality=50)
-                    parts.append({"mime_type": "image/jpeg", "data": byte_arr.getvalue()})
+        csv_data = df.to_string(index=False)
+        prompt = f"""
+        The user asked: "{user_text}"
+        Here is the archival database metadata for all 53 artworks:
+        {csv_data}
 
-            response = model.generate_content(parts)
+        Instructions: Answer the user's question based on the database metadata provided above. If they ask for a list of artworks with specific elements, provide the Artwork IDs and Titles from the text data.
+        """
+        try:
+            response = model.generate_content(prompt)
             res_text = response.text
             audio_html = text_to_speech_html(res_text)
             return {"text": res_text + audio_html}
         except Exception as e:
-            return {"text": f"Error analyzing images: {str(e)}"}
+            return {"text": f"Error: {str(e)}"}
 
     # SCENARIO D: Single Artwork Follow-up
     requested_id = requested_ids[0]
@@ -252,7 +255,8 @@ def answer_question(message, history):
         Instructions: Respond conversationally. Address their specific agreement, disagreement, or question directly based on the image provided. Do not repeat the original 4 paragraphs.
         """
         try:
-            response = model.generate_content([prompt, {"mime_type": mime_or_error, "data": img_bytes}])
+            # Send compressed image to Gemini for speed
+            response = model.generate_content([prompt, {"mime_type": "image/jpeg", "data": optimize_image_for_gemini(img_bytes)}])
             res_text = response.text
             audio_html = text_to_speech_html(res_text)
             return {"text": res_text + audio_html}
@@ -288,7 +292,8 @@ def answer_question(message, history):
     5. Paragraph 4: Textual analysis of semantic segmentation (sky, water, land, etc.).
     """
     try:
-        response = model.generate_content([strict_prompt, {"mime_type": mime_or_error, "data": img_bytes}])
+        # Send compressed image to Gemini for speed
+        response = model.generate_content([strict_prompt, {"mime_type": "image/jpeg", "data": optimize_image_for_gemini(img_bytes)}])
         response_text = response.text
         
         original_img = Image.open(io.BytesIO(img_bytes))
@@ -311,7 +316,7 @@ demo = gr.ChatInterface(
     fn=answer_question,
     multimodal=True,
     title="Adelaide Artworks AI (1-53)",
-    description="Ask about an artwork (1-53), compare multiple (e.g., 'compare 6 and 13'), ask general visual questions (e.g., 'which ones have boats?'), or upload an image!"
+    description="Ask about an artwork (1-53), compare multiple, ask general questions, or upload an image!"
 )
 
 if __name__ == "__main__":
