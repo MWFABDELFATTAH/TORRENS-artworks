@@ -12,7 +12,7 @@ from gtts import gTTS
 
 # 1. Setup Google Gemini
 genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
-model = genai.GenerativeModel('gemini-1.5-flash')
+model = genai.GenerativeModel('gemini-2.5-flash')
 
 # 2. Load Excel Data
 try:
