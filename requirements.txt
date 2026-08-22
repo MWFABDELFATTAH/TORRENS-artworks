@@ -5,3 +5,4 @@ openpyxl
 scikit-image
 numpy
 Pillow
+gTTS
