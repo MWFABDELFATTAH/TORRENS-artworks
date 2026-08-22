@@ -2,26 +2,16 @@ import os
 import pandas as pd
 import gradio as gr
 import re
-from google import genai
-from google.genai import types
+import google.generativeai as genai
 from PIL import Image
 import io
 import numpy as np
 from gtts import gTTS
 from sklearn.cluster import KMeans
-import random
 
-# 1. Setup Google Gemini with the NEW library and your 3 API keys
-API_KEYS = [
-    "AQ.Ab8RN6KiB9HBDhhRmWPWizkb_Z9pBaFkt3BlK4JhmIKZofiMHA",
-    "AQ.Ab8RN6JaeGTdVaZsBn7Xf8AfE6KAmrSgoR-cZnGpX5za63T43Q",
-    "AQ.Ab8RN6KHWcBqABaBFh0QGE9by37e9a16S1vJhglTVAyy9Trt_A"
-]
-
-def get_genai_client():
-    """Returns a Gemini client using a random API key to balance the load for 10 users"""
-    key = random.choice(API_KEYS)
-    return genai.Client(api_key=key)
+# 1. Setup Google Gemini
+genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
+model = genai.GenerativeModel('gemini-3.7-flash')
 
 # 2. Load Excel Data
 try:
@@ -83,17 +73,17 @@ def answer_question(message, history):
         if not user_text: return "Please enter a number 1-53."
         
         csv_data = df.to_string(index=False)
-        is_followup = False
         
+        # Check if we are currently discussing an artwork
+        is_followup = False
         if history:
             matches = re.findall(r'Artwork ID (\d+)', str(history))
             if matches:
                 art_id = int(matches[-1])
                 is_followup = True
 
-        client = get_genai_client()
-
         if is_followup:
+            # User is either challenging the last artwork OR asking a general dataset question
             row = df[df['ID'].astype(str).str.strip() == str(art_id)].iloc[0]
             title = str(row.get('TITLE', 'Unknown'))
             orig_path = get_image_path(art_id)
@@ -111,11 +101,10 @@ def answer_question(message, history):
             - YOU MUST NOT HALLUCINATE. Use only the provided data.
             """
             try:
-                contents = [prompt]
                 if img_bytes:
-                    contents.append(types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"))
-                
-                res = client.models.generate_content(model="gemini-2.0-flash", contents=contents)
+                    res = model.generate_content([prompt, {"mime_type": "image/jpeg", "data": img_bytes}])
+                else:
+                    res = model.generate_content(prompt)
                 res_text = res.text
 
                 audio_path = "followup_response.mp3"
@@ -126,13 +115,14 @@ def answer_question(message, history):
             except Exception as e:
                 return f"Error: {str(e)}"
         else:
+            # No history, just a general question
             prompt = f"""
             The user asked: "{user_text}"
             Here is the archival database metadata for all 53 artworks:
             {csv_data}
             Instructions: Answer the user's question using ONLY the database metadata provided above. List Artwork IDs and Titles. DO NOT HALLUCINATE.
             """
-            res = client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
+            res = model.generate_content(prompt)
             res_text = res.text
             audio_path = "general_response.mp3"
             clean_text = re.sub(r'[*#`_]', '', res_text)
@@ -183,12 +173,7 @@ def answer_question(message, history):
     """
     
     try:
-        client = get_genai_client()
-        contents = [prompt]
-        if gemini_img_bytes:
-            contents.append(types.Part.from_bytes(data=gemini_img_bytes, mime_type="image/jpeg"))
-            
-        res = client.models.generate_content(model="gemini-2.0-flash", contents=contents)
+        res = model.generate_content([prompt, {"mime_type": "image/jpeg", "data": gemini_img_bytes}])
         res_text = res.text
 
         # Generate Audio File
