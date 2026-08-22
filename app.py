@@ -26,6 +26,18 @@ def get_raw_bytes(filepath):
             return f.read()
     return None
 
+def optimize_image_for_gemini(img_bytes):
+    """Compresses image to 256px so Gemini replies fast."""
+    try:
+        from PIL import Image
+        img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+        img.thumbnail((256, 256), Image.Resampling.LANCZOS)
+        byte_arr = io.BytesIO()
+        img.save(byte_arr, format='JPEG', quality=60)
+        return byte_arr.getvalue()
+    except:
+        return img_bytes
+
 def text_to_speech_html(text, filename="audio.mp3"):
     try:
         clean_text = re.sub(r'[*#`_]', '', text)
@@ -40,11 +52,11 @@ def text_to_speech_html(text, filename="audio.mp3"):
             <audio controls autoplay style="width: 100%; display: block;"><source src="data:audio/mp3;base64,{audio_b64}" type="audio/mp3"></audio>
         </div>
         """
-    except Exception as e:
+    except:
         return ""
 
 def bytes_to_base64_html(img_bytes, filename, caption):
-    """Instantly converts raw bytes to HTML without opening in PIL"""
+    """Instantly converts raw bytes to HTML for display and download"""
     if img_bytes is None: return ""
     try:
         img_str = base64.b64encode(img_bytes).decode('utf-8')
@@ -56,7 +68,7 @@ def bytes_to_base64_html(img_bytes, filename, caption):
             </a>
         </div>
         """
-    except Exception as e:
+    except:
         return ""
 
 # 3. The Chat Engine
@@ -104,21 +116,21 @@ def answer_question(message, history):
     seg_bytes = get_raw_bytes(f"preloaded_segments/seg_{requested_id}.jpg")
     colors_bytes = get_raw_bytes(f"preloaded_colors/colors_{requested_id}.jpg")
     
-    # We also need to send an image to Gemini. Let's just send the original bytes.
-    # Gemini is smart enough to read it even if it's slightly larger.
     mime_type = "image/jpeg" if original_img_path.lower().endswith(("jpg", "jpeg")) else "image/png"
 
     prompt = f"""
     You are an expert art historian. Artwork ID {requested_id}: {title}, Artist: {row.get('Artist (if known)', 'Unknown')}, Date: {row.get('Date', 'Unknown')}.
     RULES:
-    1. EXACTLY THREE PARAGRAPHS, UNDER 300 WORDS TOTAL.
-    2. Paragraph 1: Introduce artwork and visual analysis.
-    3. Paragraph 2: Relate to urban history of Adelaide.
-    4. Paragraph 3: Analyze semantic segmentation and dominant colors.
+    1. YOUR RESPONSE MUST BE EXACTLY FOUR PARAGRAPHS.
+    2. EACH PARAGRAPH MUST BE APPROXIMATELY 100 WORDS. (Total 400 words).
+    3. Paragraph 1: Introduce the artwork (Name, Artist, Year, context) and visual analysis.
+    4. Paragraph 2: Conduct a visual analysis of the attached image, including dominant colors and mood.
+    5. Paragraph 3: Relate to urban history of Adelaide.
+    6. Paragraph 4: Conduct a textual analysis of semantic segmentation (sky, water, land, etc.).
     """
     try:
-        # ONLY Gemini API call + Audio generation. ZERO Image processing.
-        response = model.generate_content([prompt, {"mime_type": mime_type, "data": original_bytes}])
+        # Send tiny image to Gemini for fast response
+        response = model.generate_content([prompt, {"mime_type": mime_type, "data": optimize_image_for_gemini(original_bytes)}])
         res_text = response.text
         
         text_md = f"**Artwork ID {requested_id}**\n\n{res_text}\n\n---\n"
