@@ -4,7 +4,6 @@ import gradio as gr
 import re
 import base64
 import google.generativeai as genai
-from PIL import Image
 import io
 from gtts import gTTS
 
@@ -20,23 +19,12 @@ except Exception as e:
     print(f"Error loading Excel: {e}")
     df = pd.DataFrame()
 
-def get_image_data(image_id):
-    img_dir = "."
-    for filename in os.listdir(img_dir):
-        ext = filename.split('.')[-1].lower()
-        if filename.lower().startswith(f"{image_id}.") and ext in ["jpg", "jpeg", "png", "webp"]:
-            img_path = os.path.join(img_dir, filename)
-            with open(img_path, "rb") as image_file: return img_path, image_file.read()
-    return None, None
-
-def optimize_image_for_gemini(img_bytes):
-    try:
-        img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-        img.thumbnail((512, 512), Image.Resampling.LANCZOS)
-        byte_arr = io.BytesIO()
-        img.save(byte_arr, format='JPEG', quality=70)
-        return byte_arr.getvalue()
-    except: return img_bytes
+def get_raw_bytes(filepath):
+    """Reads a file instantly as raw bytes without PIL processing"""
+    if os.path.exists(filepath):
+        with open(filepath, "rb") as f:
+            return f.read()
+    return None
 
 def text_to_speech_html(text, filename="audio.mp3"):
     try:
@@ -52,14 +40,14 @@ def text_to_speech_html(text, filename="audio.mp3"):
             <audio controls autoplay style="width: 100%; display: block;"><source src="data:audio/mp3;base64,{audio_b64}" type="audio/mp3"></audio>
         </div>
         """
-    except: return ""
+    except Exception as e:
+        return ""
 
-def pil_to_base64_html(img, filename, caption):
-    if img is None: return ""
+def bytes_to_base64_html(img_bytes, filename, caption):
+    """Instantly converts raw bytes to HTML without opening in PIL"""
+    if img_bytes is None: return ""
     try:
-        buffered = io.BytesIO()
-        img.convert("RGB").save(buffered, format="JPEG", quality=85)
-        img_str = base64.b64encode(buffered.getvalue()).decode('utf-8')
+        img_str = base64.b64encode(img_bytes).decode('utf-8')
         return f"""
         <div style="margin-top: 15px;">
             <p style="font-weight: bold; margin-bottom: 5px;">{caption} (Click to download)</p>
@@ -68,7 +56,8 @@ def pil_to_base64_html(img, filename, caption):
             </a>
         </div>
         """
-    except: return ""
+    except Exception as e:
+        return ""
 
 # 3. The Chat Engine
 def answer_question(message, history):
@@ -92,21 +81,32 @@ def answer_question(message, history):
             return {"text": res_text + text_to_speech_html(res_text, "answer.mp3")}
         except Exception as e: return {"text": f"Error: {str(e)}"}
 
-    # Load Pre-processed Images (Instant, 0 seconds)
     requested_id = requested_ids[0]
     match_df = df[df['ID'].astype(str).str.strip() == str(requested_id)]
     if match_df.empty: return {"text": "Artwork not found."}
 
     row = match_df.iloc[0]
     title = str(row.get('TITLE', 'Unknown'))
-    img_path, img_bytes = get_image_data(requested_id)
     
-    # Load pre-made segmentation and color bar
-    seg_path = f"preloaded_segments/seg_{requested_id}.jpg"
-    colors_path = f"preloaded_colors/colors_{requested_id}.jpg"
+    # Find the original image extension
+    img_dir = "."
+    original_img_path = None
+    for filename in os.listdir(img_dir):
+        if filename.lower().startswith(f"{requested_id}.") and filename.split('.')[-1].lower() in ["jpg", "jpeg", "png", "webp"]:
+            original_img_path = os.path.join(img_dir, filename)
+            break
+
+    if not original_img_path:
+        return {"text": "Image not found."}
+
+    # INSTANTLY load pre-made images from folders (Zero CPU math)
+    original_bytes = get_raw_bytes(original_img_path)
+    seg_bytes = get_raw_bytes(f"preloaded_segments/seg_{requested_id}.jpg")
+    colors_bytes = get_raw_bytes(f"preloaded_colors/colors_{requested_id}.jpg")
     
-    seg_img = Image.open(seg_path) if os.path.exists(seg_path) else None
-    color_img = Image.open(colors_path) if os.path.exists(colors_path) else None
+    # We also need to send an image to Gemini. Let's just send the original bytes.
+    # Gemini is smart enough to read it even if it's slightly larger.
+    mime_type = "image/jpeg" if original_img_path.lower().endswith(("jpg", "jpeg")) else "image/png"
 
     prompt = f"""
     You are an expert art historian. Artwork ID {requested_id}: {title}, Artist: {row.get('Artist (if known)', 'Unknown')}, Date: {row.get('Date', 'Unknown')}.
@@ -117,14 +117,14 @@ def answer_question(message, history):
     4. Paragraph 3: Analyze semantic segmentation and dominant colors.
     """
     try:
-        # ONLY Gemini is called here. No heavy math. Takes ~15 seconds.
-        response = model.generate_content([prompt, {"mime_type": "image/jpeg", "data": optimize_image_for_gemini(img_bytes)}])
+        # ONLY Gemini API call + Audio generation. ZERO Image processing.
+        response = model.generate_content([prompt, {"mime_type": mime_type, "data": original_bytes}])
         res_text = response.text
         
         text_md = f"**Artwork ID {requested_id}**\n\n{res_text}\n\n---\n"
-        text_md += pil_to_base64_html(Image.open(io.BytesIO(img_bytes)), f"art_{requested_id}_orig.jpg", "Original Artwork")
-        text_md += pil_to_base64_html(seg_img, f"art_{requested_id}_seg.jpg", "Semantic Segmentation")
-        text_md += pil_to_base64_html(color_img, f"art_{requested_id}_colors.jpg", "Dominant Color Palette")
+        text_md += bytes_to_base64_html(original_bytes, f"art_{requested_id}_orig.jpg", "Original Artwork")
+        text_md += bytes_to_base64_html(seg_bytes, f"art_{requested_id}_seg.jpg", "Semantic Segmentation")
+        text_md += bytes_to_base64_html(colors_bytes, f"art_{requested_id}_colors.jpg", "Dominant Color Palette")
 
         return {"text": text_md + text_to_speech_html(res_text, f"art_{requested_id}.mp3")}
     except Exception as e:
