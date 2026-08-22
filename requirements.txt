@@ -1,5 +1,6 @@
 pandas
-gradio
+gradio==4.44.1
+gradio_client==1.3.0
 google-generativeai
 openpyxl
 numpy
