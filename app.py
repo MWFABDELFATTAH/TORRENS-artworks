@@ -10,9 +10,9 @@ from skimage import segmentation, color
 import numpy as np
 from gtts import gTTS
 
-# 1. Setup Google Gemini
+# 1. Setup Google Gemini (Fixed model name to prevent 404 error)
 genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
-model = genai.GenerativeModel('gemini-2.5-flash')
+model = genai.GenerativeModel('gemini-2.5-flash-latest')
 
 # 2. Load Excel Data
 try:
@@ -100,12 +100,15 @@ def answer_question(message, history):
                 parts.append(f"Reference Artwork ID {requested_id}:")
                 parts.append({"mime_type": mime_type, "data": img_bytes})
 
+        uploaded_img_bytes = None
         for file_path in user_files:
             ext = file_path.split('.')[-1].lower()
             mime = "image/jpeg" if ext in ["jpg", "jpeg"] else "image/png"
             try:
                 with open(file_path, "rb") as f:
-                    parts.append({"mime_type": mime, "data": f.read()})
+                    img_data = f.read()
+                    uploaded_img_bytes = img_data # Save bytes for segmentation
+                    parts.append({"mime_type": mime, "data": img_data})
             except Exception as e:
                 return {"text": f"Error reading uploaded file: {str(e)}"}
 
@@ -113,6 +116,18 @@ def answer_question(message, history):
             response = model.generate_content(parts)
             res_text = response.text
             audio_html = text_to_speech_html(res_text)
+            
+            # NEW: Generate Segmentation for the uploaded image
+            if uploaded_img_bytes:
+                original_img = Image.open(io.BytesIO(uploaded_img_bytes))
+                seg_img = generate_segmentation_image(uploaded_img_bytes)
+                
+                text_md = f"**Analysis of Uploaded Image:**\n\n{res_text}\n\n---\n**Your Image & Semantic Segmentation Map:**\n"
+                if seg_img:
+                    return {"text": text_md + audio_html, "images": [original_img, seg_img]}
+                else:
+                    return {"text": text_md + "\n*(Segmentation could not be generated)*" + audio_html, "images": [original_img]}
+            
             return {"text": res_text + audio_html}
         except Exception as e:
             return {"text": f"Error analyzing uploaded image: {str(e)}"}
@@ -199,7 +214,7 @@ def answer_question(message, history):
     except Exception as e:
         return {"text": f"Error generating response: {str(e)}"}
 
-# 4. Gradio Interface (FIXED to prevent startup crash)
+# 4. Gradio Interface
 demo = gr.ChatInterface(
     fn=answer_question,
     multimodal=True, # This enables the upload button natively without crashing
