@@ -98,7 +98,7 @@ def answer_question(message, history):
                 
                 chat_completion = client.chat.completions.create(
                     messages=messages,
-                    model="qwen-3.6-27b",
+                    model="qwen/qwen3.6-27b",
                 )
                 res_text = chat_completion.choices[0].message.content
                 
@@ -117,7 +117,7 @@ def answer_question(message, history):
             """
             chat_completion = client.chat.completions.create(
                 messages=[{"role": "user", "content": prompt}],
-                model="qwen-3.6-27b",
+                model="qwen/qwen3.6-27b",
             )
             res_text = chat_completion.choices[0].message.content
             audio_path = "general_response.mp3"
@@ -166,7 +166,7 @@ def answer_question(message, history):
             
         chat_completion = client.chat.completions.create(
             messages=messages,
-            model="qwen-3.6-27b",
+            model="qwen/qwen3.6-27b",
         )
         res_text = chat_completion.choices[0].message.content
 
