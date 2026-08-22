@@ -21,7 +21,7 @@ API_KEYS = [
 # Pick a random key for this session to distribute the load
 selected_key = random.choice(API_KEYS)
 genai.configure(api_key=selected_key)
-model = genai.GenerativeModel('gemini-2.0-flash') # 2.0-flash has the best free-tier limits
+model = genai.GenerativeModel('gemini-3.7-flash')
 
 # 2. Load Excel Data
 try:
