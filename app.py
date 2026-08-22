@@ -10,7 +10,7 @@ import numpy as np
 from gtts import gTTS
 from sklearn.cluster import KMeans
 
-# 1. Setup Google Gemini with the NEW library and your NEW AQ. key
+# 1. Setup Google Gemini with the MODERN SDK and your AQ. key
 client = genai.Client(api_key="AQ.Ab8RN6KiB9HBDhhRmWPWizkb_Z9pBaFkt3BlK4JhmIKZofiMHA")
 
 # 2. Load Excel Data
@@ -93,7 +93,8 @@ def answer_question(message, history):
                 contents = [prompt]
                 if img_bytes:
                     contents.append(types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"))
-                res = client.models.generate_content(model="gemini-2.0-flash", contents=contents)
+                # USING GEMINI 3.7 FLASH
+                res = client.models.generate_content(model="gemini-3.7-flash", contents=contents)
                 res_text = res.text
                 audio_path = "followup_response.mp3"
                 clean_text = re.sub(r'[*#`_]', '', res_text)
@@ -108,7 +109,8 @@ def answer_question(message, history):
             {csv_data}
             Instructions: Answer the user's question using ONLY the database metadata provided above. List Artwork IDs and Titles. DO NOT HALLUCINATE.
             """
-            res = client.models.generate_content(model="gemini-2.0-flash", contents=prompt)
+            # USING GEMINI 3.7 FLASH
+            res = client.models.generate_content(model="gemini-3.7-flash", contents=prompt)
             res_text = res.text
             audio_path = "general_response.mp3"
             clean_text = re.sub(r'[*#`_]', '', res_text)
@@ -153,7 +155,8 @@ def answer_question(message, history):
         contents = [prompt]
         if gemini_img_bytes:
             contents.append(types.Part.from_bytes(data=gemini_img_bytes, mime_type="image/jpeg"))
-        res = client.models.generate_content(model="gemini-2.0-flash", contents=contents)
+        # USING GEMINI 3.7 FLASH
+        res = client.models.generate_content(model="gemini-3.7-flash", contents=contents)
         res_text = res.text
 
         clean_text = re.sub(r'[*#`_]', '', res_text)
