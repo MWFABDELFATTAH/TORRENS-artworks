@@ -26,6 +26,7 @@ def get_image_path(image_id):
     return None
 
 def make_html_image(filepath, caption):
+    """Resizes image to 500px to prevent Render RAM crash, then makes it downloadable"""
     if not filepath or not os.path.exists(filepath): return ""
     try:
         img = Image.open(filepath).convert("RGB")
@@ -88,7 +89,7 @@ def answer_question(message, history):
     seg_path = f"preloaded_segments/seg_{art_id}.jpg"
     col_path = f"preloaded_colors/colors_{art_id}.jpg"
 
-    # Shrink image for Gemini
+    # Shrink image for Gemini to prevent RAM crash and speed up API
     try:
         img = Image.open(orig_path).convert("RGB")
         img.thumbnail((256, 256), Image.Resampling.LANCZOS)
@@ -118,8 +119,8 @@ def answer_question(message, history):
 
     return html
 
-# Added type="messages" back so Gradio knows how to read the multimodal input!
-demo = gr.ChatInterface(fn=answer_question, type="messages", multimodal=True, title="Adelaide Artworks AI (1-53)")
+# NOTE: No `type="messages"` argument is used here, making it fully compatible with the latest Gradio.
+demo = gr.ChatInterface(fn=answer_question, multimodal=True, title="Adelaide Artworks AI (1-53)")
 
 if __name__ == "__main__":
     demo.launch(server_name="0.0.0.0", server_port=int(os.environ.get("PORT", 7860)))
