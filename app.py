@@ -10,7 +10,7 @@ from gtts import gTTS
 from sklearn.cluster import KMeans
 
 # 1. Setup Google Gemini
-genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
+genai.configure(api_key=os.environ.get("AQ.Ab8RN6KiB9HBDhhRmWPWizkb_Z9pBaFkt3BlK4JhmIKZofiMHA"))
 model = genai.GenerativeModel('gemini-3.7-flash')
 
 # 2. Load Excel Data
