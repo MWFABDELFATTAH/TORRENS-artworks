@@ -11,7 +11,7 @@ from gtts import gTTS
 from sklearn.cluster import KMeans
 
 # 1. Setup Groq API
-client = Groq(api_key="gsk_YOUR_GROQ_API_KEY_HERE")
+client = Groq(api_key="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")
 
 # 2. Load Excel Data
 try:
