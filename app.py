@@ -7,8 +7,8 @@ from google.genai import types
 from PIL import Image
 import io
 
-# 1. Setup Google Gemini (Ensure GEMINI_API_KEY is in your Render Environment)
-client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
+# 1. Setup Google Gemini 
+client = genai.Client(api_key=os.environ.get("gemini_API_KEY"))
 
 # 2. Load Excel Data
 try:
