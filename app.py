@@ -2,16 +2,13 @@ import os
 import pandas as pd
 import gradio as gr
 import re
-from groq import Groq
+from google import genai
+from google.genai import types
 from PIL import Image
 import io
-import base64
-import numpy as np
-from gtts import gTTS
-from sklearn.cluster import KMeans
 
-# 1. Setup Groq API
-client = Groq(api_key="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")
+# 1. Setup Google Gemini (Ensure GEMINI_API_KEY is in your Render Environment)
+client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 
 # 2. Load Excel Data
 try:
@@ -26,37 +23,21 @@ def get_image_path(image_id):
             return filename
     return None
 
-def get_color_percentages(img_path):
-    """Calculates exact percentages in 0.05 seconds on a 30x30 image"""
-    try:
-        img = Image.open(img_path).convert("RGB")
-        img.thumbnail((30, 30)) 
-        arr = np.array(img).reshape((-1, 3))
-        kmeans = KMeans(n_clusters=5, random_state=42, n_init=1, max_iter=10).fit(arr)
-        counts = np.unique(kmeans.labels_, return_counts=True)[1]
-        pcts = (counts / counts.sum()) * 100
-        colors = kmeans.cluster_centers_.astype(int)
-        idx = np.argsort(-pcts); colors = colors[idx]; pcts = pcts[idx]
-        data = [f"Color {i+1}: RGB({r},{g},{b}) - {pcts[i]:.1f}%" for i, (r,g,b) in enumerate(colors)]
-        return "\n".join(data)
-    except:
-        return "Color data unavailable."
-
-def compress_image_to_base64(img_path):
-    """Compresses image to 512px and converts to base64 for the AI"""
+def compress_image_for_gemini(img_path):
+    """Compresses image to 512px to prevent RAM crashes and speed up API"""
     try:
         img = Image.open(img_path).convert("RGB")
         img.thumbnail((512, 512), Image.Resampling.LANCZOS)
         buffer = io.BytesIO()
         img.save(buffer, format="JPEG", quality=65)
-        return base64.b64encode(buffer.getvalue()).decode('utf-8')
+        return buffer.getvalue()
     except:
-        return None
+        with open(img_path, "rb") as f: return f.read()
 
-def answer_question(message, history):
+def answer_question(user_text, history):
     if df.empty: return "Error loading data."
     
-    user_text = message.get("text", "").strip()
+    user_text = user_text.strip()
     nums = re.findall(r'\b(\d+)\b', user_text)
     art_id = None
     for n in nums:
@@ -79,7 +60,7 @@ def answer_question(message, history):
             row = df[df['ID'].astype(str).str.strip() == str(art_id)].iloc[0]
             title = str(row.get('TITLE', 'Unknown'))
             orig_path = get_image_path(art_id)
-            img_b64 = compress_image_to_base64(orig_path) if orig_path else None
+            img_bytes = compress_image_for_gemini(orig_path) if orig_path else None
 
             prompt = f"""
             The user asked: "{user_text}"
@@ -92,20 +73,11 @@ def answer_question(message, history):
             - YOU MUST NOT HALLUCINATE. Use only the provided data.
             """
             try:
-                messages = [{"role": "user", "content": [{"type": "text", "text": prompt}]}]
-                if img_b64:
-                    messages[0]["content"].append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}})
-                
-                chat_completion = client.chat.completions.create(
-                    messages=messages,
-                    model="qwen/qwen3.6-27b",
-                )
-                res_text = chat_completion.choices[0].message.content
-                
-                audio_path = "followup_response.mp3"
-                clean_text = re.sub(r'[*#`_]', '', res_text)
-                gTTS(clean_text, lang='en', slow=False).save(audio_path)
-                return {"text": res_text, "files": [audio_path]}
+                contents = [prompt]
+                if img_bytes:
+                    contents.append(types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"))
+                res = client.models.generate_content(model="gemini-3.7-flash", contents=contents)
+                return res.text
             except Exception as e:
                 return f"Error: {str(e)}"
         else:
@@ -115,15 +87,8 @@ def answer_question(message, history):
             {csv_data}
             Instructions: Answer the user's question using ONLY the database metadata provided above. List Artwork IDs and Titles. DO NOT HALLUCINATE.
             """
-            chat_completion = client.chat.completions.create(
-                messages=[{"role": "user", "content": prompt}],
-                model="qwen/qwen3.6-27b",
-            )
-            res_text = chat_completion.choices[0].message.content
-            audio_path = "general_response.mp3"
-            clean_text = re.sub(r'[*#`_]', '', res_text)
-            gTTS(clean_text, lang='en', slow=False).save(audio_path)
-            return {"text": res_text, "files": [audio_path]}
+            res = client.models.generate_content(model="gemini-3.7-flash", contents=prompt)
+            return res.text
 
     # SCENARIO B: Fresh request for a Single Artwork
     row = df[df['ID'].astype(str).str.strip() == str(art_id)].iloc[0]
@@ -137,56 +102,49 @@ def answer_question(message, history):
     orig_path = get_image_path(art_id)
     seg_path = f"preloaded_segments/seg_{art_id}.jpg"
     col_path = f"preloaded_colors/colors_{art_id}.jpg"
-    audio_path = f"art_{art_id}_audio.mp3"
-
-    color_data = get_color_percentages(orig_path)
-    img_b64 = compress_image_to_base64(orig_path) if orig_path else None
+    img_bytes = compress_image_for_gemini(orig_path) if orig_path else None
 
     prompt = f"""
     You are a strict, analytical art historian. You are analyzing Artwork ID {art_id}.
     Here is the EXACT archival data for this artwork:
     {csv_context}
-    Here is the quantitative data for the 5 most dominant colors extracted via K-Means clustering:
-    {color_data}
+
     CRITICAL RULES (STRICTLY ENFORCED):
     1. YOU MUST NOT HALLUCINATE. Do not use any outside knowledge. If the archival data says 'Unknown' for the Artist, you MUST state "Artist Unknown". Do not invent names, dates, or historical facts not present in the archival data.
     2. YOUR RESPONSE MUST BE EXACTLY FOUR PARAGRAPHS. EACH PARAGRAPH MUST BE AT LEAST 150 WORDS. THE TOTAL RESPONSE MUST BE OVER 600 WORDS.
     3. Do not provide generic introductions or conclusions. Go directly into deep, analytical prose.
+
     PARAGRAPH STRUCTURE AND REQUIREMENTS:
     - Paragraph 1 (Archival & Contextual Analysis): Analyze the artwork using ONLY the archival data provided above. Discuss the title, artist (if known), date, artistic style, and source. Do not invent historical context; rely strictly on the provided metadata.
-    - Paragraph 2 (Quantitative Visual & Color Analysis): Analyze the visual composition of the attached image. You MUST explicitly state and analyze the exact RGB values and Percentages provided in the quantitative color data above. Discuss what these dominant colors signify regarding mood, lighting, and materiality based strictly on what you see in the attached image.
+    - Paragraph 2 (Visual Analysis): Analyze the visual composition of the attached image. Discuss the mood, lighting, brushwork, and materiality based strictly on what you see in the attached image.
     - Paragraph 3 (Urban & Environmental Context): Relate the artwork to the urban and environmental history of Adelaide based strictly on the visual evidence (e.g., infrastructure, landscape, River Torrens, colonial settlement) and the archival date. Do not invent historical figures.
     - Paragraph 4 (Semantic Segmentation Analysis): You are looking at the original image. Conduct a rigorous textual analysis of how a semantic segmentation algorithm would break down this image. Discuss the distinct spatial regions, boundaries, and color fields (e.g., sky, water, land, architecture, figures). Explain what this computational breakdown reveals about the composition and spatial hierarchy of the artwork.
     """
     
     try:
-        messages = [{"role": "user", "content": [{"type": "text", "text": prompt}]}]
-        if img_b64:
-            messages[0]["content"].append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}})
-            
-        chat_completion = client.chat.completions.create(
-            messages=messages,
-            model="qwen/qwen3.6-27b",
-        )
-        res_text = chat_completion.choices[0].message.content
-
-        clean_text = re.sub(r'[*#`_]', '', res_text)
-        gTTS(clean_text, lang='en', slow=False).save(audio_path)
+        contents = [prompt]
+        if img_bytes:
+            contents.append(types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"))
+        res = client.models.generate_content(model="gemini-3.7-flash", contents=contents)
+        res_text = res.text
 
         text_md = f"**Artwork ID {art_id}**\n\n{res_text}\n\n---\n"
-        text_md += f"**Quantitative Color Data:**\n{color_data}\n\n---\n"
         
+        # Collect 3 image paths to send back to Gradio natively
         files_to_return = []
         if orig_path and os.path.exists(orig_path): files_to_return.append(orig_path)
         if os.path.exists(seg_path): files_to_return.append(seg_path)
         if os.path.exists(col_path): files_to_return.append(col_path)
-        files_to_return.append(audio_path)
 
-        return {"text": text_md, "files": files_to_return}
+        return {
+            "text": text_md,
+            "files": files_to_return
+        }
     except Exception as e:
         return f"Error generating response: {str(e)}"
 
-demo = gr.ChatInterface(fn=answer_question, multimodal=True, title="Adelaide Artworks AI (1-53)")
+# multimodal=False removes the upload button, making the UI much cleaner and faster
+demo = gr.ChatInterface(fn=answer_question, title="Adelaide Artworks AI (1-53)")
 
 if __name__ == "__main__":
     demo.launch(server_name="0.0.0.0", server_port=int(os.environ.get("PORT", 7860)))
