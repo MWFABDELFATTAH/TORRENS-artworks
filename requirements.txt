@@ -1,9 +1,5 @@
 pandas
 gradio
-groq
+google-genai
 openpyxl
-numpy
-scikit-learn
 Pillow
-gTTS
-audioop-lts
