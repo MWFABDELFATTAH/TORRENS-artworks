@@ -1,6 +1,3 @@
-Here is the refined code. All instances have been updated to strictly use `gemini-3.6-flash`, and any references to other model versions have been removed.
-
-```python
 import os
 import pandas as pd
 import gradio as gr
