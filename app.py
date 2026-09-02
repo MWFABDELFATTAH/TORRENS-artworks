@@ -30,7 +30,6 @@ def get_image_path(image_id):
     return IMAGE_LOOKUP.get(str(image_id))
 
 def compress_image_for_gemini(img_path):
-    """Compresses image to 512px to prevent RAM crashes and speed up API"""
     try:
         img = Image.open(img_path).convert("RGB")
         img.thumbnail((512, 512), Image.Resampling.LANCZOS)
@@ -53,7 +52,6 @@ def answer_question(user_text, history):
             art_id = int(n)
             break
 
-    # SCENARIO A: No number provided (Handles BOTH Follow-ups AND General Questions)
     if not art_id:
         if not user_text: 
             return "Please enter a number 1-53."
@@ -109,7 +107,6 @@ def answer_question(user_text, history):
                 traceback.print_exc()
                 return f"Error: {str(e)}"
 
-    # SCENARIO B: Fresh request for a Single Artwork
     row = df[df['ID'].astype(str).str.strip() == str(art_id)]
     if row.empty:
         return f"Artwork ID {art_id} not found in the database."
@@ -153,7 +150,6 @@ def answer_question(user_text, history):
 
         text_md = f"**Artwork ID {art_id}**\n\n{res_text}\n\n---\n"
         
-        # Collect 3 image paths to send back to Gradio natively
         files_to_return = []
         if orig_path and os.path.exists(orig_path): files_to_return.append(orig_path)
         if os.path.exists(seg_path): files_to_return.append(seg_path)
@@ -167,9 +163,7 @@ def answer_question(user_text, history):
         traceback.print_exc()
         return f"Error generating response: {str(e)}"
 
-# multimodal=False removes the upload button, making the UI much cleaner and faster
 demo = gr.ChatInterface(fn=answer_question, title="Adelaide Artworks AI (1-53)", multimodal=False)
 
 if __name__ == "__main__":
     demo.launch(server_name="0.0.0.0", server_port=int(os.environ.get("PORT", 7860)))
-```
