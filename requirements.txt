@@ -1,5 +1,5 @@
 pandas
 gradio
-google-genai
+openai
 openpyxl
 Pillow
