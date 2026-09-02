@@ -3,14 +3,18 @@ import pandas as pd
 import gradio as gr
 import re
 import traceback
-import time
-from google import genai
-from google.genai import types
-from PIL import Image
+import base64
 import io
+from PIL import Image
+from openai import OpenAI
 
-# 1. Setup Google Gemini 
-client = genai.Client(api_key=os.environ.get("gemini_API_KEY"))
+# 1. Setup OpenRouter Client (Free & Open Source Llama 3.2 Vision)
+client = OpenAI(
+    base_url="https://openrouter.ai/api/v1",
+    api_key=os.environ.get("OPENROUTER_API_KEY")
+)
+# This is Meta's free, state-of-the-art vision model
+MODEL_NAME = "meta-llama/llama-3.2-11b-vision-instruct:free" 
 
 # 2. Load Excel Data
 try:
@@ -30,7 +34,7 @@ for filename in os.listdir("."):
 def get_image_path(image_id):
     return IMAGE_LOOKUP.get(str(image_id))
 
-def compress_image_for_gemini(img_path):
+def compress_image(img_path):
     try:
         img = Image.open(img_path).convert("RGB")
         img.thumbnail((512, 512), Image.Resampling.LANCZOS)
@@ -40,22 +44,6 @@ def compress_image_for_gemini(img_path):
     except Exception:
         with open(img_path, "rb") as f: 
             return f.read()
-
-def call_gemini_with_retry(model_name, contents, max_retries=3, delay=5):
-    """Calls Gemini and retries automatically if servers are busy (503)."""
-    for attempt in range(max_retries):
-        try:
-            res = client.models.generate_content(model=model_name, contents=contents)
-            return res
-        except Exception as e:
-            err_str = str(e).lower()
-            # Check if the error is 503 (high demand) or 429 (rate limit)
-            if ("503" in err_str or "unavailable" in err_str or "429" in err_str) and attempt < max_retries - 1:
-                print(f"Model busy (503/429). Retrying in {delay} seconds... (Attempt {attempt + 1}/{max_retries})")
-                time.sleep(delay)
-            else:
-                # If it's a different error, or we ran out of retries, raise it
-                raise e
 
 def answer_question(user_text, history):
     if df.empty: 
@@ -89,7 +77,7 @@ def answer_question(user_text, history):
             row = row.iloc[0]
             title = str(row.get('TITLE', 'Unknown'))
             orig_path = get_image_path(art_id)
-            img_bytes = compress_image_for_gemini(orig_path) if orig_path else None
+            img_bytes = compress_image(orig_path) if orig_path else None
 
             prompt = f"""
             The user asked: "{user_text}"
@@ -102,11 +90,20 @@ def answer_question(user_text, history):
             - YOU MUST NOT HALLUCINATE. Use only the provided data.
             """
             try:
-                contents = [prompt]
+                content_blocks = [{"type": "text", "text": prompt}]
                 if img_bytes:
-                    contents.append(types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"))
-                res = call_gemini_with_retry("gemini-3.6-flash", contents)
-                return res.text
+                    img_b64 = base64.b64encode(img_bytes).decode('utf-8')
+                    content_blocks.append({
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}
+                    })
+                
+                res = client.chat.completions.create(
+                    model=MODEL_NAME,
+                    max_tokens=2000,
+                    messages=[{"role": "user", "content": content_blocks}]
+                )
+                return res.choices[0].message.content
             except Exception as e:
                 traceback.print_exc()
                 return f"Error: {str(e)}"
@@ -118,8 +115,12 @@ def answer_question(user_text, history):
             Instructions: Answer the user's question using ONLY the database metadata provided above. List Artwork IDs and Titles. DO NOT HALLUCINATE.
             """
             try:
-                res = call_gemini_with_retry("gemini-3.6-flash", prompt)
-                return res.text
+                res = client.chat.completions.create(
+                    model=MODEL_NAME,
+                    max_tokens=1024,
+                    messages=[{"role": "user", "content": prompt}]
+                )
+                return res.choices[0].message.content
             except Exception as e:
                 traceback.print_exc()
                 return f"Error: {str(e)}"
@@ -139,7 +140,7 @@ def answer_question(user_text, history):
     orig_path = get_image_path(art_id)
     seg_path = f"preloaded_segments/seg_{art_id}.jpg"
     col_path = f"preloaded_colors/colors_{art_id}.jpg"
-    img_bytes = compress_image_for_gemini(orig_path) if orig_path else None
+    img_bytes = compress_image(orig_path) if orig_path else None
 
     prompt = f"""
     You are a strict, analytical art historian. You are analyzing Artwork ID {art_id}.
@@ -159,11 +160,20 @@ def answer_question(user_text, history):
     """
     
     try:
-        contents = [prompt]
+        content_blocks = [{"type": "text", "text": prompt}]
         if img_bytes:
-            contents.append(types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"))
-        res = call_gemini_with_retry("gemini-3.6-flash", contents)
-        res_text = res.text
+            img_b64 = base64.b64encode(img_bytes).decode('utf-8')
+            content_blocks.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}
+            })
+
+        res = client.chat.completions.create(
+            model=MODEL_NAME,
+            max_tokens=2500, # Large limit to allow for 600+ words
+            messages=[{"role": "user", "content": content_blocks}]
+        )
+        res_text = res.choices[0].message.content
 
         text_md = f"**Artwork ID {art_id}**\n\n{res_text}\n\n---\n"
         
