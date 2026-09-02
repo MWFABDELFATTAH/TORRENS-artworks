@@ -3,6 +3,7 @@ import pandas as pd
 import gradio as gr
 import re
 import traceback
+import time
 from google import genai
 from google.genai import types
 from PIL import Image
@@ -19,7 +20,7 @@ except Exception as e:
     print("Error loading data.xlsx:", e)
     df = pd.DataFrame()
 
-# 3. Pre-compute Image Lookup Dictionary (Performance Fix)
+# 3. Pre-compute Image Lookup Dictionary
 IMAGE_LOOKUP = {}
 for filename in os.listdir("."):
     if filename.split('.')[-1].lower() in ["jpg", "jpeg", "png", "webp"]:
@@ -39,6 +40,22 @@ def compress_image_for_gemini(img_path):
     except Exception:
         with open(img_path, "rb") as f: 
             return f.read()
+
+def call_gemini_with_retry(model_name, contents, max_retries=3, delay=5):
+    """Calls Gemini and retries automatically if servers are busy (503)."""
+    for attempt in range(max_retries):
+        try:
+            res = client.models.generate_content(model=model_name, contents=contents)
+            return res
+        except Exception as e:
+            err_str = str(e).lower()
+            # Check if the error is 503 (high demand) or 429 (rate limit)
+            if ("503" in err_str or "unavailable" in err_str or "429" in err_str) and attempt < max_retries - 1:
+                print(f"Model busy (503/429). Retrying in {delay} seconds... (Attempt {attempt + 1}/{max_retries})")
+                time.sleep(delay)
+            else:
+                # If it's a different error, or we ran out of retries, raise it
+                raise e
 
 def answer_question(user_text, history):
     if df.empty: 
@@ -88,7 +105,7 @@ def answer_question(user_text, history):
                 contents = [prompt]
                 if img_bytes:
                     contents.append(types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"))
-                res = client.models.generate_content(model="gemini-3.7-flash", contents=contents)
+                res = call_gemini_with_retry("gemini-3.6-flash", contents)
                 return res.text
             except Exception as e:
                 traceback.print_exc()
@@ -101,7 +118,7 @@ def answer_question(user_text, history):
             Instructions: Answer the user's question using ONLY the database metadata provided above. List Artwork IDs and Titles. DO NOT HALLUCINATE.
             """
             try:
-                res = client.models.generate_content(model="gemini-3.7-flash", contents=prompt)
+                res = call_gemini_with_retry("gemini-3.6-flash", prompt)
                 return res.text
             except Exception as e:
                 traceback.print_exc()
@@ -145,7 +162,7 @@ def answer_question(user_text, history):
         contents = [prompt]
         if img_bytes:
             contents.append(types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"))
-        res = client.models.generate_content(model="gemini-3.7-flash", contents=contents)
+        res = call_gemini_with_retry("gemini-3.6-flash", contents)
         res_text = res.text
 
         text_md = f"**Artwork ID {art_id}**\n\n{res_text}\n\n---\n"
