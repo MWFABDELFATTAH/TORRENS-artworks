@@ -3,18 +3,13 @@ import pandas as pd
 import gradio as gr
 import re
 import traceback
-import base64
-import io
+from google import genai
+from google.genai import types
 from PIL import Image
-from openai import OpenAI
+import io
 
-# 1. Setup OpenRouter Client (Free & Open Source Llama 3.2 Vision)
-client = OpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=os.environ.get("OPENROUTER_API_KEY")
-)
-# This is Meta's free, state-of-the-art vision model
-MODEL_NAME = "meta-llama/llama-3.2-11b-vision-instruct:free" 
+# 1. Setup Google Gemini 
+client = genai.Client(api_key=os.environ.get("gemini_API_KEY"))
 
 # 2. Load Excel Data
 try:
@@ -34,7 +29,7 @@ for filename in os.listdir("."):
 def get_image_path(image_id):
     return IMAGE_LOOKUP.get(str(image_id))
 
-def compress_image(img_path):
+def compress_image_for_gemini(img_path):
     try:
         img = Image.open(img_path).convert("RGB")
         img.thumbnail((512, 512), Image.Resampling.LANCZOS)
@@ -77,7 +72,7 @@ def answer_question(user_text, history):
             row = row.iloc[0]
             title = str(row.get('TITLE', 'Unknown'))
             orig_path = get_image_path(art_id)
-            img_bytes = compress_image(orig_path) if orig_path else None
+            img_bytes = compress_image_for_gemini(orig_path) if orig_path else None
 
             prompt = f"""
             The user asked: "{user_text}"
@@ -90,20 +85,12 @@ def answer_question(user_text, history):
             - YOU MUST NOT HALLUCINATE. Use only the provided data.
             """
             try:
-                content_blocks = [{"type": "text", "text": prompt}]
+                contents = [prompt]
                 if img_bytes:
-                    img_b64 = base64.b64encode(img_bytes).decode('utf-8')
-                    content_blocks.append({
-                        "type": "image_url",
-                        "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}
-                    })
-                
-                res = client.chat.completions.create(
-                    model=MODEL_NAME,
-                    max_tokens=2000,
-                    messages=[{"role": "user", "content": content_blocks}]
-                )
-                return res.choices[0].message.content
+                    contents.append(types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"))
+                # Using Flagship gemini-1.5-pro
+                res = client.models.generate_content(model="gemini-1.5-pro", contents=contents)
+                return res.text
             except Exception as e:
                 traceback.print_exc()
                 return f"Error: {str(e)}"
@@ -115,12 +102,9 @@ def answer_question(user_text, history):
             Instructions: Answer the user's question using ONLY the database metadata provided above. List Artwork IDs and Titles. DO NOT HALLUCINATE.
             """
             try:
-                res = client.chat.completions.create(
-                    model=MODEL_NAME,
-                    max_tokens=1024,
-                    messages=[{"role": "user", "content": prompt}]
-                )
-                return res.choices[0].message.content
+                # Using Flagship gemini-1.5-pro
+                res = client.models.generate_content(model="gemini-1.5-pro", contents=prompt)
+                return res.text
             except Exception as e:
                 traceback.print_exc()
                 return f"Error: {str(e)}"
@@ -140,7 +124,7 @@ def answer_question(user_text, history):
     orig_path = get_image_path(art_id)
     seg_path = f"preloaded_segments/seg_{art_id}.jpg"
     col_path = f"preloaded_colors/colors_{art_id}.jpg"
-    img_bytes = compress_image(orig_path) if orig_path else None
+    img_bytes = compress_image_for_gemini(orig_path) if orig_path else None
 
     prompt = f"""
     You are a strict, analytical art historian. You are analyzing Artwork ID {art_id}.
@@ -160,20 +144,12 @@ def answer_question(user_text, history):
     """
     
     try:
-        content_blocks = [{"type": "text", "text": prompt}]
+        contents = [prompt]
         if img_bytes:
-            img_b64 = base64.b64encode(img_bytes).decode('utf-8')
-            content_blocks.append({
-                "type": "image_url",
-                "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}
-            })
-
-        res = client.chat.completions.create(
-            model=MODEL_NAME,
-            max_tokens=2500, # Large limit to allow for 600+ words
-            messages=[{"role": "user", "content": content_blocks}]
-        )
-        res_text = res.choices[0].message.content
+            contents.append(types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"))
+        # Using Flagship gemini-1.5-pro
+        res = client.models.generate_content(model="gemini-1.5-pro", contents=contents)
+        res_text = res.text
 
         text_md = f"**Artwork ID {art_id}**\n\n{res_text}\n\n---\n"
         
