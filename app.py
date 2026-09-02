@@ -1,3 +1,6 @@
+Here is the refined code. All instances have been updated to strictly use `gemini-3.6-flash`, and any references to other model versions have been removed.
+
+```python
 import os
 import pandas as pd
 import gradio as gr
@@ -20,7 +23,6 @@ except Exception as e:
     df = pd.DataFrame()
 
 # 3. Pre-compute Image Lookup Dictionary (Performance Fix)
-# This runs once at startup instead of scanning the folder on every message
 IMAGE_LOOKUP = {}
 for filename in os.listdir("."):
     if filename.split('.')[-1].lower() in ["jpg", "jpeg", "png", "webp"]:
@@ -91,8 +93,7 @@ def answer_question(user_text, history):
                 contents = [prompt]
                 if img_bytes:
                     contents.append(types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"))
-                # FIX: Changed from gemini-3.7-flash to gemini-2.5-flash
-                res = client.models.generate_content(model="gemini-2.5-flash", contents=contents)
+                res = client.models.generate_content(model="gemini-3.6-flash", contents=contents)
                 return res.text
             except Exception as e:
                 traceback.print_exc()
@@ -105,8 +106,7 @@ def answer_question(user_text, history):
             Instructions: Answer the user's question using ONLY the database metadata provided above. List Artwork IDs and Titles. DO NOT HALLUCINATE.
             """
             try:
-                # FIX: Changed from gemini-3.7-flash to gemini-2.5-flash
-                res = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
+                res = client.models.generate_content(model="gemini-3.6-flash", contents=prompt)
                 return res.text
             except Exception as e:
                 traceback.print_exc()
@@ -151,8 +151,7 @@ def answer_question(user_text, history):
         contents = [prompt]
         if img_bytes:
             contents.append(types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"))
-        # FIX: Changed from gemini-3.7-flash to gemini-2.5-flash
-        res = client.models.generate_content(model="gemini-2.5-flash", contents=contents)
+        res = client.models.generate_content(model="gemini-3.6-flash", contents=contents)
         res_text = res.text
 
         text_md = f"**Artwork ID {art_id}**\n\n{res_text}\n\n---\n"
@@ -176,3 +175,4 @@ demo = gr.ChatInterface(fn=answer_question, title="Adelaide Artworks AI (1-53)",
 
 if __name__ == "__main__":
     demo.launch(server_name="0.0.0.0", server_port=int(os.environ.get("PORT", 7860)))
+```
