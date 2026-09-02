@@ -2,6 +2,7 @@ import os
 import pandas as pd
 import gradio as gr
 import re
+import traceback
 from google import genai
 from google.genai import types
 from PIL import Image
@@ -15,13 +16,19 @@ try:
     df = pd.read_excel("data.xlsx")
     df.columns = df.columns.str.strip()
 except Exception as e:
+    print("Error loading data.xlsx:", e)
     df = pd.DataFrame()
 
+# 3. Pre-compute Image Lookup Dictionary (Performance Fix)
+# This runs once at startup instead of scanning the folder on every message
+IMAGE_LOOKUP = {}
+for filename in os.listdir("."):
+    if filename.split('.')[-1].lower() in ["jpg", "jpeg", "png", "webp"]:
+        base_name = filename.split('.')[0]
+        IMAGE_LOOKUP[base_name] = filename
+
 def get_image_path(image_id):
-    for filename in os.listdir("."):
-        if filename.lower().startswith(f"{image_id}.") and filename.split('.')[-1].lower() in ["jpg", "jpeg", "png", "webp"]:
-            return filename
-    return None
+    return IMAGE_LOOKUP.get(str(image_id))
 
 def compress_image_for_gemini(img_path):
     """Compresses image to 512px to prevent RAM crashes and speed up API"""
@@ -31,11 +38,13 @@ def compress_image_for_gemini(img_path):
         buffer = io.BytesIO()
         img.save(buffer, format="JPEG", quality=65)
         return buffer.getvalue()
-    except:
-        with open(img_path, "rb") as f: return f.read()
+    except Exception:
+        with open(img_path, "rb") as f: 
+            return f.read()
 
 def answer_question(user_text, history):
-    if df.empty: return "Error loading data."
+    if df.empty: 
+        return "Error loading data."
     
     user_text = user_text.strip()
     nums = re.findall(r'\b(\d+)\b', user_text)
@@ -47,7 +56,9 @@ def answer_question(user_text, history):
 
     # SCENARIO A: No number provided (Handles BOTH Follow-ups AND General Questions)
     if not art_id:
-        if not user_text: return "Please enter a number 1-53."
+        if not user_text: 
+            return "Please enter a number 1-53."
+        
         csv_data = df.to_string(index=False)
         is_followup = False
         if history:
@@ -57,7 +68,11 @@ def answer_question(user_text, history):
                 is_followup = True
 
         if is_followup:
-            row = df[df['ID'].astype(str).str.strip() == str(art_id)].iloc[0]
+            row = df[df['ID'].astype(str).str.strip() == str(art_id)]
+            if row.empty:
+                return f"Could not find data for Artwork ID {art_id}."
+            
+            row = row.iloc[0]
             title = str(row.get('TITLE', 'Unknown'))
             orig_path = get_image_path(art_id)
             img_bytes = compress_image_for_gemini(orig_path) if orig_path else None
@@ -76,9 +91,11 @@ def answer_question(user_text, history):
                 contents = [prompt]
                 if img_bytes:
                     contents.append(types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"))
-                res = client.models.generate_content(model="gemini-3.7-flash", contents=contents)
+                # FIX: Changed from gemini-3.7-flash to gemini-2.5-flash
+                res = client.models.generate_content(model="gemini-2.5-flash", contents=contents)
                 return res.text
             except Exception as e:
+                traceback.print_exc()
                 return f"Error: {str(e)}"
         else:
             prompt = f"""
@@ -87,11 +104,20 @@ def answer_question(user_text, history):
             {csv_data}
             Instructions: Answer the user's question using ONLY the database metadata provided above. List Artwork IDs and Titles. DO NOT HALLUCINATE.
             """
-            res = client.models.generate_content(model="gemini-3.7-flash", contents=prompt)
-            return res.text
+            try:
+                # FIX: Changed from gemini-3.7-flash to gemini-2.5-flash
+                res = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
+                return res.text
+            except Exception as e:
+                traceback.print_exc()
+                return f"Error: {str(e)}"
 
     # SCENARIO B: Fresh request for a Single Artwork
-    row = df[df['ID'].astype(str).str.strip() == str(art_id)].iloc[0]
+    row = df[df['ID'].astype(str).str.strip() == str(art_id)]
+    if row.empty:
+        return f"Artwork ID {art_id} not found in the database."
+        
+    row = row.iloc[0]
     title = str(row.get('TITLE', 'Unknown'))
     artist = str(row.get('Artist (if known)', 'Unknown'))
     date = str(row.get('Date', 'Unknown'))
@@ -125,7 +151,8 @@ def answer_question(user_text, history):
         contents = [prompt]
         if img_bytes:
             contents.append(types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"))
-        res = client.models.generate_content(model="gemini-3.7-flash", contents=contents)
+        # FIX: Changed from gemini-3.7-flash to gemini-2.5-flash
+        res = client.models.generate_content(model="gemini-2.5-flash", contents=contents)
         res_text = res.text
 
         text_md = f"**Artwork ID {art_id}**\n\n{res_text}\n\n---\n"
@@ -141,10 +168,11 @@ def answer_question(user_text, history):
             "files": files_to_return
         }
     except Exception as e:
+        traceback.print_exc()
         return f"Error generating response: {str(e)}"
 
 # multimodal=False removes the upload button, making the UI much cleaner and faster
-demo = gr.ChatInterface(fn=answer_question, title="Adelaide Artworks AI (1-53)")
+demo = gr.ChatInterface(fn=answer_question, title="Adelaide Artworks AI (1-53)", multimodal=False)
 
 if __name__ == "__main__":
     demo.launch(server_name="0.0.0.0", server_port=int(os.environ.get("PORT", 7860)))
