@@ -88,7 +88,7 @@ def answer_question(user_text, history):
                 contents = [prompt]
                 if img_bytes:
                     contents.append(types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"))
-                res = client.models.generate_content(model="gemini-3.6-flash", contents=contents)
+                res = client.models.generate_content(model="gemini-3.7-flash", contents=contents)
                 return res.text
             except Exception as e:
                 traceback.print_exc()
@@ -101,7 +101,7 @@ def answer_question(user_text, history):
             Instructions: Answer the user's question using ONLY the database metadata provided above. List Artwork IDs and Titles. DO NOT HALLUCINATE.
             """
             try:
-                res = client.models.generate_content(model="gemini-3.6-flash", contents=prompt)
+                res = client.models.generate_content(model="gemini-3.7-flash", contents=prompt)
                 return res.text
             except Exception as e:
                 traceback.print_exc()
@@ -145,7 +145,7 @@ def answer_question(user_text, history):
         contents = [prompt]
         if img_bytes:
             contents.append(types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"))
-        res = client.models.generate_content(model="gemini-3.6-flash", contents=contents)
+        res = client.models.generate_content(model="gemini-3.7-flash", contents=contents)
         res_text = res.text
 
         text_md = f"**Artwork ID {art_id}**\n\n{res_text}\n\n---\n"
