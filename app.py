@@ -1,41 +1,24 @@
 import os
-import sys
-import re
-import json
-import time
-import io
-import traceback
-
+import base64
 import pandas as pd
 import gradio as gr
-from google import genai
-from google.genai import types
+import re
+import traceback
+from openai import OpenAI
 from PIL import Image
+import io
+import time
 
-# ---------------------------------------------------------------
-# 1. Setup
-# ---------------------------------------------------------------
-client = genai.Client(api_key=os.environ.get("gemini_API_KEY"))
+# --- ZeroLimitAI Setup ---
+# The API key is read from an environment variable. We will set this in Step 4.
+client = OpenAI(
+    api_key=os.environ.get("ZEROLIMIT_API_KEY"),
+    base_url="https://www.zerolimitai.com/api/v1"
+)
+# "auto" tells ZeroLimitAI to automatically pick the best free vision model.
+VISION_MODEL = "auto"
 
-# Models are tried in order. Override with env vars if names change
-# (run client.models.list() to see what your key can use).
-LIVE_MODELS = os.environ.get("LIVE_MODELS", "gemini-2.5-flash,gemini-2.5-flash-lite").split(",")
-WARM_MODELS = os.environ.get("WARM_MODELS", "gemini-2.5-pro,gemini-2.5-flash").split(",")
-
-CACHE_FILE = "response_cache.json"
-try:
-    with open(CACHE_FILE, encoding="utf-8") as f:
-        CACHE = json.load(f)
-except Exception:
-    CACHE = {}
-
-def save_cache():
-    with open(CACHE_FILE, "w", encoding="utf-8") as f:
-        json.dump(CACHE, f, ensure_ascii=False, indent=1)
-
-# ---------------------------------------------------------------
-# 2. Load Excel data
-# ---------------------------------------------------------------
+# 2. Load Excel Data
 try:
     df = pd.read_excel("data.xlsx")
     df.columns = df.columns.str.strip()
@@ -43,18 +26,18 @@ except Exception as e:
     print("Error loading data.xlsx:", e)
     df = pd.DataFrame()
 
-# ---------------------------------------------------------------
-# 3. Image lookup
-# ---------------------------------------------------------------
+# 3. Pre-compute Image Lookup Dictionary
 IMAGE_LOOKUP = {}
 for filename in os.listdir("."):
-    if filename.split(".")[-1].lower() in ["jpg", "jpeg", "png", "webp"]:
-        IMAGE_LOOKUP[filename.split(".")[0]] = filename
+    if filename.split('.')[-1].lower() in ["jpg", "jpeg", "png", "webp"]:
+        base_name = filename.split('.')[0]
+        IMAGE_LOOKUP[base_name] = filename
 
 def get_image_path(image_id):
     return IMAGE_LOOKUP.get(str(image_id))
 
-def compress_image_for_gemini(img_path):
+def compress_image_for_api(img_path):
+    """Compress image and return raw bytes."""
     try:
         img = Image.open(img_path).convert("RGB")
         img.thumbnail((512, 512), Image.Resampling.LANCZOS)
@@ -65,64 +48,113 @@ def compress_image_for_gemini(img_path):
         with open(img_path, "rb") as f:
             return f.read()
 
-# ---------------------------------------------------------------
-# 4. Gemini helper with model fallback + retry
-# ---------------------------------------------------------------
-def call_gemini(contents, models):
-    last_err = None
-    for model in models:
-        for attempt in range(2):
+def call_vision_api(prompt, image_bytes=None):
+    """Helper function to call ZeroLimitAI with optional image."""
+    messages = [{"role": "user", "content": []}]
+    messages[0]["content"].append({"type": "text", "text": prompt})
+    
+    if image_bytes:
+        img_b64 = base64.b64encode(image_bytes).decode("utf-8")
+        messages[0]["content"].append({
+            "type": "image_url",
+            "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}
+        })
+    
+    # Retry logic for rate limits
+    for attempt in range(3):
+        try:
+            response = client.chat.completions.create(
+                model=VISION_MODEL,
+                messages=messages,
+                max_tokens=2000
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            if attempt < 2:
+                time.sleep(2 ** attempt)
+                continue
+            raise e
+
+def answer_question(user_text, history):
+    if df.empty:
+        return "Error loading data."
+
+    user_text = user_text.strip()
+    nums = re.findall(r'\b(\d+)\b', user_text)
+    art_id = None
+    for n in nums:
+        if 1 <= int(n) <= 53:
+            art_id = int(n)
+            break
+
+    # --- Follow-up question path ---
+    if not art_id:
+        if not user_text:
+            return "Please enter a number 1-53."
+
+        csv_data = df.to_string(index=False)
+        is_followup = False
+        if history:
+            matches = re.findall(r'Artwork ID (\d+)', str(history))
+            if matches:
+                art_id = int(matches[-1])
+                is_followup = True
+
+        if is_followup:
+            row = df[df['ID'].astype(str).str.strip() == str(art_id)]
+            if row.empty:
+                return f"Could not find data for Artwork ID {art_id}."
+
+            row = row.iloc[0]
+            title = str(row.get('TITLE', 'Unknown'))
+            orig_path = get_image_path(art_id)
+            img_bytes = compress_image_for_api(orig_path) if orig_path else None
+
+            prompt = f"""
+            The user asked: "{user_text}"
+            You are currently analyzing Artwork ID {art_id} ({title}). The image is attached.
+            The full database metadata for all 53 artworks is provided below:
+            {csv_data}
+            INSTRUCTIONS:
+            - If the user is asking a follow-up question or challenging your previous analysis about Artwork {art_id}, respond conversationally in under 150 words based on the attached image.
+            - If the user is asking a GENERAL question (e.g., "which ones have boats or animals?"), IGNORE the attached image and answer their question by searching the database metadata provided above. List the Artwork IDs and Titles.
+            - YOU MUST NOT HALLUCINATE. Use only the provided data.
+            """
             try:
-                res = client.models.generate_content(model=model.strip(), contents=contents)
-                if res.text:
-                    return res.text
+                return call_vision_api(prompt, img_bytes)
             except Exception as e:
-                last_err = e
-                print(f"[{model}] attempt {attempt + 1} failed: {e}")
-                time.sleep(3 * (attempt + 1))
-    raise last_err if last_err else RuntimeError("Empty response")
+                traceback.print_exc()
+                return f"Error: {str(e)}"
+        else:
+            prompt = f"""
+            The user asked: "{user_text}"
+            Here is the archival database metadata for all 53 artworks:
+            {csv_data}
+            Instructions: Answer the user's question using ONLY the database metadata provided above. List Artwork IDs and Titles. DO NOT HALLUCINATE.
+            """
+            try:
+                return call_vision_api(prompt)
+            except Exception as e:
+                traceback.print_exc()
+                return f"Error: {str(e)}"
 
-# ---------------------------------------------------------------
-# 5. Local fallback search (no API needed)
-# ---------------------------------------------------------------
-STOPWORDS = {"which", "what", "show", "list", "have", "with", "that", "there", "ones",
-             "artworks", "artwork", "paintings", "painting", "images", "image", "any",
-             "about", "does", "contain", "containing", "where", "find", "give", "tell"}
-
-def local_search(user_text):
-    words = [w for w in re.findall(r"[a-zA-Z]+", user_text.lower())
-             if len(w) > 3 and w not in STOPWORDS]
-    if not words:
-        return "Please type an artwork number (1-53) or a keyword such as 'boat' or 'bridge'."
-    hits = []
-    for _, r in df.iterrows():
-        blob = " ".join(str(v) for v in r.values).lower()
-        if any(w in blob for w in words):
-            hits.append(f"- **ID {r.get('ID')}**: {r.get('TITLE', 'Unknown')}")
-    if not hits:
-        return f"No artworks matched: {', '.join(words)}."
-    return ("The AI service is busy, so this is a basic keyword search of the archive "
-            f"for *{', '.join(words)}*:\n\n" + "\n".join(hits[:30]))
-
-# ---------------------------------------------------------------
-# 6. Main analysis generator (used live AND for cache warming)
-# ---------------------------------------------------------------
-def build_artwork_context(art_id):
-    row = df[df["ID"].astype(str).str.strip() == str(art_id)]
+    # --- Specific artwork path ---
+    row = df[df['ID'].astype(str).str.strip() == str(art_id)]
     if row.empty:
-        return None, None
+        return f"Artwork ID {art_id} not found in the database."
+        
     row = row.iloc[0]
-    ctx = (f"Title: {row.get('TITLE', 'Unknown')}\n"
-           f"Artist: {row.get('Artist (if known)', 'Unknown')}\n"
-           f"Date: {row.get('Date', 'Unknown')}\n"
-           f"Style: {row.get('Artistic style', 'Unknown')}\n"
-           f"Source: {row.get('Source', 'N/A')}")
-    return ctx, row
-
-def generate_analysis(art_id, models):
-    csv_context, _ = build_artwork_context(art_id)
+    title = str(row.get('TITLE', 'Unknown'))
+    artist = str(row.get('Artist (if known)', 'Unknown'))
+    date = str(row.get('Date', 'Unknown'))
+    style = str(row.get('Artistic style', 'Unknown'))
+    source = str(row.get('Source', 'N/A'))
+    csv_context = f"Title: {title}\nArtist: {artist}\nDate: {date}\nStyle: {style}\nSource: {source}"
+    
     orig_path = get_image_path(art_id)
-    img_bytes = compress_image_for_gemini(orig_path) if orig_path else None
+    seg_path = f"preloaded_segments/seg_{art_id}.jpg"
+    col_path = f"preloaded_colors/colors_{art_id}.jpg"
+    img_bytes = compress_image_for_api(orig_path) if orig_path else None
 
     prompt = f"""
     You are a strict, analytical art historian. You are analyzing Artwork ID {art_id}.
@@ -135,118 +167,30 @@ def generate_analysis(art_id, models):
     3. Do not provide generic introductions or conclusions. Go directly into deep, analytical prose.
 
     PARAGRAPH STRUCTURE AND REQUIREMENTS:
-    - Paragraph 1 (Archival & Contextual Analysis): Analyze the artwork using ONLY the archival data provided above. Discuss the title, artist (if known), date, artistic style, and source. Do not invent historical context; rely strictly on the provided metadata.
-    - Paragraph 2 (Visual Analysis): Analyze the visual composition of the attached image. Discuss the mood, lighting, brushwork, and materiality based strictly on what you see in the attached image.
-    - Paragraph 3 (Urban & Environmental Context): Relate the artwork to the urban and environmental history of Adelaide based strictly on the visual evidence (e.g., infrastructure, landscape, River Torrens, colonial settlement) and the archival date. Do not invent historical figures.
-    - Paragraph 4 (Semantic Segmentation Analysis): You are looking at the original image. Conduct a rigorous textual analysis of how a semantic segmentation algorithm would break down this image. Discuss the distinct spatial regions, boundaries, and color fields (e.g., sky, water, land, architecture, figures). Explain what this computational breakdown reveals about the composition and spatial hierarchy of the artwork.
+    - Paragraph 1 (About the Artwork and its Artist): Analyze the artwork using ONLY the archival data provided above. Discuss the title, artist (if known), date, artistic style, and source. Do not invent historical context; rely strictly on the provided metadata.
+    - Paragraph 2 (About the Artwork and its Visual Style): Analyze the visual composition of the attached image. Discuss the mood, lighting, brushwork, and materiality based strictly on what you see in the attached image.
+    - Paragraph 3 (What it Means to the Urban History of Adelaide): Relate the artwork to the urban and environmental history of Adelaide based strictly on the visual evidence (e.g., infrastructure, landscape, River Torrens, colonial settlement) and the archival date. Do not invent historical figures.
+    - Paragraph 4 (What the AI Semantic Segmentation Tells Us): You are looking at the original image. Conduct a rigorous textual analysis of how a semantic segmentation algorithm would break down this image. Discuss the distinct spatial regions, boundaries, and color fields (e.g., sky, water, land, architecture, figures). Explain what this computational breakdown reveals about the composition and spatial hierarchy of the artwork.
     """
-    contents = [prompt]
-    if img_bytes:
-        contents.append(types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"))
-    return call_gemini(contents, models)
-
-# ---------------------------------------------------------------
-# 7. Chat handler
-# ---------------------------------------------------------------
-def answer_question(user_text, history):
-    if df.empty:
-        return "Error loading data."
-
-    user_text = (user_text or "").strip()
-    if not user_text:
-        return "Please enter a number 1-53."
-
-    # Treat as an artwork request only if the message is short (e.g. "34", "show 34")
-    # so follow-ups like "why does paragraph 2 say that?" aren't mistaken for IDs.
-    art_id = None
-    if len(user_text.split()) <= 4:
-        for n in re.findall(r"\b(\d+)\b", user_text):
-            if 1 <= int(n) <= 53:
-                art_id = int(n)
-                break
-
-    # ---------- Path A: artwork number ----------
-    if art_id:
-        ctx, _ = build_artwork_context(art_id)
-        if ctx is None:
-            return f"Artwork ID {art_id} not found in the database."
-
-        key = str(art_id)
-        try:
-            if key in CACHE:
-                res_text = CACHE[key]
-            else:
-                res_text = generate_analysis(art_id, LIVE_MODELS)
-                CACHE[key] = res_text
-                save_cache()
-        except Exception as e:
-            traceback.print_exc()
-            return (f"**Artwork ID {art_id}**\n\nThe AI service is busy right now. "
-                    f"Archive details:\n\n{ctx}\n\nPlease try again in a minute.")
-
-        orig_path = get_image_path(art_id)
-        seg_path = f"preloaded_segments/seg_{art_id}.jpg"
-        col_path = f"preloaded_colors/colors_{art_id}.jpg"
-        files = [p for p in (orig_path, seg_path, col_path) if p and os.path.exists(p)]
-
-        return {"text": f"**Artwork ID {art_id}**\n\n{res_text}\n\n---\n", "files": files}
-
-    # ---------- Path B: free-text / follow-up ----------
-    csv_data = df.to_string(index=False)
-    last_id = None
-    matches = re.findall(r"Artwork ID (\d+)", str(history))
-    if matches:
-        last_id = int(matches[-1])
-
-    img_part = None
-    if last_id:
-        p = get_image_path(last_id)
-        if p:
-            img_part = types.Part.from_bytes(data=compress_image_for_gemini(p), mime_type="image/jpeg")
-
-    prompt = f"""
-    The user asked: "{user_text}"
-    {"You are currently discussing Artwork ID " + str(last_id) + ". Its image is attached." if img_part else ""}
-    The full database metadata for all 53 artworks is below:
-    {csv_data}
-    INSTRUCTIONS:
-    - If the user is following up on or challenging the analysis of the current artwork, reply conversationally in under 150 words, based on the attached image.
-    - If the user asks a GENERAL question (e.g. "which ones have boats?"), ignore the image and answer from the database metadata. List Artwork IDs and Titles.
-    - YOU MUST NOT HALLUCINATE. Use only the provided data.
-    """
-    contents = [prompt] + ([img_part] if img_part else [])
+    
     try:
-        return call_gemini(contents, LIVE_MODELS)
-    except Exception:
+        res_text = call_vision_api(prompt, img_bytes)
+        text_md = f"**Artwork ID {art_id}**\n\n{res_text}\n\n---\n"
+        
+        files_to_return = []
+        if orig_path and os.path.exists(orig_path): files_to_return.append(orig_path)
+        if os.path.exists(seg_path): files_to_return.append(seg_path)
+        if os.path.exists(col_path): files_to_return.append(col_path)
+
+        return {
+            "text": text_md,
+            "files": files_to_return
+        }
+    except Exception as e:
         traceback.print_exc()
-        return local_search(user_text)
+        return f"Error generating response: {str(e)}"
 
-# ---------------------------------------------------------------
-# 8. Cache warming:  python app.py warm
-# ---------------------------------------------------------------
-def warm_cache():
-    for i in range(1, 54):
-        if str(i) in CACHE:
-            print("skip", i)
-            continue
-        try:
-            CACHE[str(i)] = generate_analysis(i, WARM_MODELS)
-            save_cache()
-            print("done", i)
-        except Exception as e:
-            print("FAILED", i, e)
-        time.sleep(10)  # stay under free-tier per-minute limits
-    missing = [i for i in range(1, 54) if str(i) not in CACHE]
-    print("Missing:", missing or "none. All 53 cached.")
-
-# ---------------------------------------------------------------
-# 9. Launch
-# ---------------------------------------------------------------
 demo = gr.ChatInterface(fn=answer_question, title="Adelaide Artworks AI (1-53)", multimodal=False)
-demo.queue(default_concurrency_limit=10)
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "warm":
-        warm_cache()
-    else:
-        demo.launch(server_name="0.0.0.0", server_port=int(os.environ.get("PORT", 7860)))
+    demo.launch(server_name="0.0.0.0", server_port=int(os.environ.get("PORT", 7860)))
