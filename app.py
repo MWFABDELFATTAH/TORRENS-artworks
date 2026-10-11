@@ -13,7 +13,8 @@ import time
 # The API key is read from an environment variable. We will set this in Step 4.
 client = OpenAI(
     api_key=os.environ.get("ZEROLIMIT_API_KEY"),
-    base_url="https://www.zerolimitai.com/api/v1"
+    base_url="https://www.zerolimitai.com/api/v1",
+    timeout=60.0  # Timeout in seconds. This gives more time for the cold start.
 )
 # "auto" tells ZeroLimitAI to automatically pick the best free vision model.
 VISION_MODEL = "auto"
